@@ -1,0 +1,20 @@
+[Unit]
+Description=Ghost Mode — Auto Privacy Cleaner
+After=default.target
+
+[Service]
+Type=oneshot
+# --- خفض الحمل على المعالج/البطارية ---
+Nice=19
+IOSchedulingClass=idle
+CPUSchedulingPolicy=idle
+CPUQuota=15%
+MemoryMax=200M
+# مهلة تهدئة قبل البدء: تمنع تعويض التشغيل الفائت (Persistent=true) من
+# الانطلاق فور الإقلاع مباشرة، ويعطي النظام وقتًا ليستقر أولاً
+ExecStartPre=/bin/sleep 30
+# ------------------------------------
+ExecStart=%h/.local/bin/ghostmode auto
+StandardOutput=journal
+StandardError=journal
+RemainAfterExit=no

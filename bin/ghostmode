@@ -1,0 +1,104 @@
+#!/usr/bin/env bash
+# Ghost Mode V2.0 — entry point. Sources every module under lib/ and
+# dispatches to the requested command. See lib/*.sh for the actual logic —
+# this file only wires things together.
+
+# When installed, LIB_DIR is set explicitly by install.sh (the modules live
+# in a fixed location, since this file gets copied around on its own). When
+# run straight from a git checkout (e.g. for development), fall back to the
+# lib/ directory next to this script.
+LIB_DIR="${GHOSTMODE_LIB_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../lib" 2>/dev/null && pwd)}"
+
+if [[ -z "$LIB_DIR" || ! -d "$LIB_DIR" ]]; then
+    echo "ghostmode: could not find its lib/ directory (looked in: ${LIB_DIR:-unset})" >&2
+    echo "If this is a broken install, reinstall with install.sh." >&2
+    exit 1
+fi
+
+for _gm_module in "$LIB_DIR"/*.sh; do
+    # shellcheck source=/dev/null
+    source "$_gm_module"
+done
+unset _gm_module
+
+cmd_help() {
+    echo ""
+    echo -e "${BLD}${BLU}╔══════════════════════════════════════════════════╗${RST}"
+    echo -e "${BLD}${BLU}║                  GHOST MODE — HELP              ║${RST}"
+    echo -e "${BLD}${BLU}╚══════════════════════════════════════════════════╝${RST}"
+    echo -e "  ${GRY}v${GHOSTMODE_VERSION}${RST}"
+    echo ""
+    echo -e "${BLD}Core commands:${RST}"
+    echo -e "  ${GRN}ghostmode${RST}                    Full manual cleanup of all traces"
+    echo -e "  ${GRN}ghostmode status${RST}             Show the full status report (no deletion)"
+    echo -e "  ${GRN}ghostmode delete${RST}             Same full cleanup as above"
+    echo -e "  ${GRN}ghostmode auto${RST}               Called automatically by the systemd timer every hour"
+    echo ""
+    echo -e "${BLD}Connections and network:${RST}"
+    echo -e "  ${GRN}ghostmode connections${RST}        Show incoming/outgoing connections + public IP/country"
+    echo -e "  ${GRN}ghostmode connections kill <pid>${RST}   Kill a suspicious connection process"
+    echo -e "  ${GRN}ghostmode connections block <ip>${RST}   Block an IP address entirely (iptables)"
+    echo ""
+    echo -e "${BLD}Tor (full anonymity):${RST}"
+    echo -e "  ${GRN}ghostmode tor on${RST}             Enable Tor for all device connections (persists after reboot)"
+    echo -e "  ${GRN}ghostmode tor off${RST}            Disable Tor"
+    echo -e "  ${GRN}ghostmode tor status${RST}         Show current Tor status"
+    echo -e "  ${GRN}ghostmode torbrowser [path]${RST}  Launch Tor Browser exempted from anonsurf's tunnel"
+    echo ""
+    echo -e "${BLD}Kill switch (only active while Tor is ON):${RST}"
+    echo -e "  ${GRN}ghostmode killswitch on${RST}      Arm it (asks for an optional VPN fallback path)"
+    echo -e "  ${GRN}ghostmode killswitch off${RST}     Disarm it, restore normal networking"
+    echo -e "  ${GRN}ghostmode killswitch status${RST}  Show armed state, VPN fallback, recent log"
+    echo ""
+    echo -e "${BLD}Fake location:${RST}"
+    echo -e "  ${GRN}ghostmode location fake <lat> <lon>${RST}  Set a fixed fake GPS location"
+    echo -e "  ${GRN}ghostmode location random${RST}            Set a random fake location"
+    echo -e "  ${GRN}ghostmode location off${RST}               Restore the real location"
+    echo ""
+    echo -e "${BLD}Fingerprint rotation (MAC + hostname):${RST}"
+    echo -e "  ${GRN}ghostmode fingerprint rotate${RST}    Rotate once, right now"
+    echo -e "  ${GRN}ghostmode fingerprint auto on${RST}   Rotate automatically every boot"
+    echo -e "  ${GRN}ghostmode fingerprint auto off${RST}  Stop automatic rotation"
+    echo ""
+    echo -e "${BLD}Custom paths (unlimited, wiped every clean/delete/auto run):${RST}"
+    echo -e "  ${GRN}ghostmode paths add <path>${RST}     Add a folder/file to watch and wipe"
+    echo -e "  ${GRN}ghostmode paths remove <path>${RST}  Stop watching it"
+    echo -e "  ${GRN}ghostmode paths list${RST}           Show all watched paths and their state"
+    echo ""
+    echo -e "${BLD}Metadata scrubbing:${RST}"
+    echo -e "  ${GRN}ghostmode metadata photo <path>${RST}  Strip date/GPS/device/all EXIF metadata"
+    echo -e "  ${GRN}ghostmode metadata audio <path>${RST}  Remove mains hum + shift voiceprint + strip metadata"
+    echo -e "  ${GRN}ghostmode metadata video <path>${RST}  Same as photo + audio, applied to a video file"
+    echo ""
+    echo -e "${BLD}Other:${RST}"
+    echo -e "  ${GRN}ghostmode security${RST}           Security principles, traffic flow, hardware hardening guide"
+    echo -e "  ${GRN}ghostmode help${RST} / ${GRN}-h${RST} / ${GRN}h${RST}      Show this list"
+    echo ""
+    echo -e "  ${RED}ghostmode destroy${RST}            Fully remove Ghost Mode from this system (irreversible)"
+    echo ""
+    echo -e "  ${GRY}Ghost Mode keeps no logs of its own operations, by design.${RST}"
+    echo ""
+}
+
+
+case "${1:-}" in
+    status)       cmd_status ;;
+    auto)         cmd_clean "auto" ;;
+    delete)       cmd_delete ;;
+    connections)  shift; cmd_connections "$@" ;;
+    tor)          shift; cmd_tor "$@" ;;
+    killswitch)   shift; cmd_killswitch "$@" ;;
+    location)     shift; cmd_location "$@" ;;
+    fingerprint)  shift; cmd_fingerprint "$@" ;;
+    security)     cmd_security ;;
+    metadata)     shift; cmd_metadata "$@" ;;
+    paths)        shift; cmd_paths "$@" ;;
+    destroy)      cmd_destroy ;;
+    torbrowser)   shift; cmd_torbrowser "$@" ;;
+    help|-h|h|--help) cmd_help ;;
+    "")           cmd_clean ;;
+    *)
+        echo "Usage: ghostmode [status|delete|auto|connections|tor|torbrowser|killswitch|location|fingerprint|metadata|paths|security|destroy|help]"
+        exit 1
+        ;;
+esac

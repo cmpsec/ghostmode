@@ -1,0 +1,8 @@
+# OS / editor noise
+.DS_Store
+*.swp
+*~
+
+# Nothing under here should ever be tracked — it's per-install state,
+# and some of it (e.g. a VPN config path) is sensitive.
+.config/ghostmode/

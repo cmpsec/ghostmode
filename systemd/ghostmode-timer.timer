@@ -1,0 +1,13 @@
+[Unit]
+Description=Ghost Mode Timer — runs every 1 hour (persistent)
+
+[Timer]
+OnCalendar=hourly
+# AccuracySec واسعة + تأخير عشوائي = النظام يجمّع وقت الاستيقاظ مع مهام أخرى
+# بدل ما يوقظ المعالج بدقة كل ساعة — يقلل استهلاك البطارية والحرارة
+AccuracySec=5min
+RandomizedDelaySec=3min
+Persistent=true
+
+[Install]
+WantedBy=timers.target
