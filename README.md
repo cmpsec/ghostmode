@@ -58,7 +58,7 @@ It is **not** built for attacking other people's systems. It protects the device
 Works on **any Debian/Kali-based machine** — nothing in the installer is tied to a specific username, hostname, or hardware. Every credential and path is supplied by you at install time.
 
 ```bash
-git clone https://github.com/compartmentalization/ghostmode.git
+git clone https://github.com/cmpsec/ghostmode.git
 cd ghostmode
 chmod +x install.sh
 ./install.sh
