@@ -88,7 +88,7 @@ cmd_help() {
     echo -e "  ${GRY}Closing Cursor's state database logs you out of Cursor. Shell suggestions return only after destroy, and only after history is emptied.${RST}"
     echo -e "  ${GRY}Status lists stored traces. It does not report whether Cursor is open.${RST}"
     echo -e "  ${GRY}Telegram, Signal, Element, and Discord local data is removed on cleanup. Server copies stay.${RST}"
-    echo -e "  ${GRY}Claude, Antigravity, and OpenCode session data is cleared with the same cleanup. Their programs stay installed.${RST}"
+    echo -e "  ${GRY}Claude, Antigravity, and OpenCode data directories are removed on cleanup. The installed programs stay.${RST}"
     echo ""
 }
 

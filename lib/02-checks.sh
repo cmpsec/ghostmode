@@ -938,22 +938,10 @@ _check_claude_traces() {
 }
 
 _check_coding_agents() {
-    local item path label padded count
-    local -a items=(
-        "$HOME/.gemini/antigravity|antigravity data"
-        "$HOME/.gemini/antigravity-ide|antigravity-ide"
-        "$HOME/.gemini/antigravity-cli|antigravity-cli"
-        "$HOME/.gemini/antigravity-browser-profile|antigravity browser"
-        "$HOME/.antigravity-ide|antigravity-ide home"
-        "$HOME/.config/Antigravity|Antigravity config"
-        "$HOME/.config/Antigravity IDE|Antigravity IDE"
-        "$HOME/.local/share/opencode|opencode data"
-        "$HOME/.local/state/opencode|opencode state"
-        "$HOME/.cache/opencode|opencode cache"
-    )
-    for item in "${items[@]}"; do
-        path="${item%%|*}"
-        label="${item##*|}"
+    local path label padded count
+    while IFS= read -r path; do
+        [[ -n "$path" ]] || continue
+        label="${path/#$HOME/\~}"
         padded=$(printf "%-22s" "$label")
         if [[ ! -e "$path" ]]; then
             echo -e "  ${GRN}✔${RST}  ${padded} → ${GRN}not found (clean)${RST}"
@@ -972,7 +960,13 @@ _check_coding_agents() {
         else
             echo -e "  ${GRN}✔${RST}  ${padded} → ${GRN}empty${RST}"
         fi
-    done
+    done < <(_coding_agent_roots)
+    padded=$(printf "%-22s" "~/.claude.json")
+    if [[ -s "$HOME/.claude.json" || -s "$HOME/.claude.json.backup" ]]; then
+        echo -e "  ${RED}✘${RST}  ${padded} → ${YLW}present${RST}"
+    else
+        echo -e "  ${GRN}✔${RST}  ${padded} → ${GRN}not found (clean)${RST}"
+    fi
 }
 
 _check_system_info() {

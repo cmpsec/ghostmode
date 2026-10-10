@@ -249,7 +249,7 @@ ghostmode/
 
 Opening a PDF or office file is kept out of the recent-file list, the document portal, and viewer history. `ghostmode status` lists files the session bus still has open, and the cleanup removes them even while that portal is connected. Telegram, Signal, Element, and Discord local data directories are removed on cleanup; the copy on their servers is not.
 
-The same cleanup clears local session data for Cursor, Claude Code, Claude Desktop, Google Antigravity (`~/.config/Antigravity`, `~/.config/Antigravity IDE`, `~/.gemini/antigravity-ide`), and OpenCode (`~/.local/share/opencode`). It does not delete the installed programs, and it does not delete OpenCode's config directory of agents and skills.
+The same cleanup removes the local data directories of Cursor, Claude, Google Antigravity, and OpenCode: config, cache, state, and Flatpak or Snap data folders for those apps. The installed programs under `/opt` and `/usr` stay.
 
 ---
 
