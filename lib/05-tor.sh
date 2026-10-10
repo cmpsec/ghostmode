@@ -18,14 +18,19 @@ cmd_tor() {
 _tor_on() {
     echo -e "${BLD}${CYN}[ Enabling Tor for all device connections ]${RST}"
     if ! command -v anonsurf >/dev/null 2>&1; then
-        echo "  anonsurf is not installed — installing from source now (no official apt package exists)..."
-        _gm_sudo apt-get update -qq 2>/dev/null
-        _gm_sudo apt-get install -y git fakeroot 2>/dev/null
-        local build_dir
-        build_dir=$(mktemp -d)
-        if git clone --depth 1 https://github.com/Und3rf10w/kali-anonsurf.git "$build_dir/kali-anonsurf" 2>/dev/null; then
-            (cd "$build_dir/kali-anonsurf" && chmod +x installer.sh \
-                && _gm_sudo run-script "$build_dir/kali-anonsurf/installer.sh") 2>/dev/null || true
+        echo -e "  ${YLW}!${RST}  anonsurf is missing — installing it quietly"
+        _gm_sudo apt-get update -qq >/dev/null 2>&1 || true
+        _gm_sudo apt-get install -y -qq git fakeroot dpkg-dev >/dev/null 2>&1 || true
+        local build_dir script
+        build_dir=$(mktemp -d /tmp/gm-anonsurf.XXXXXX)
+        script="$build_dir/kali-anonsurf/installer.sh"
+        if git clone --depth 1 -q https://github.com/Und3rf10w/kali-anonsurf.git "$build_dir/kali-anonsurf" 2>/dev/null; then
+            chmod +x "$script" 2>/dev/null || true
+            if [[ -f "$GHOSTMODE_SUDO_FILE" ]]; then
+                sudo -S -p '' bash "$script" < "$GHOSTMODE_SUDO_FILE" >/dev/null 2>&1 || true
+            else
+                _gm_sudo run-script "$script" >/dev/null 2>&1 || true
+            fi
         fi
         rm -rf "$build_dir"
     fi

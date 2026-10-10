@@ -71,6 +71,76 @@ cmd_timer() {
             return 1
         fi
     else
-        echo -e "  ${YLW}!${RST}  Saved ${norm}. It is applied the next time install.sh writes the timer."
+            echo -e "  ${YLW}!${RST}  Saved ${norm}. It is applied the next time install.sh writes the timer."
     fi
+}
+
+# NextElapseUSecRealtime is empty or 0 while the oneshot is running, and
+# unprivileged systemctl show sometimes returns nothing for a system timer.
+# Fall back to the last trigger plus the saved interval so the line always
+# carries a time when one can be calculated.
+_timer_next_text() {
+    local scope="$1"
+    local show=(systemctl)
+    [[ "$scope" == "user" ]] && show=(systemctl --user)
+
+    local next=""
+    next=$("${show[@]}" show ghostmode-timer.timer -p NextElapseUSecRealtime --value 2>/dev/null || true)
+    next="${next//$'\r'/}"
+    next="${next//$'\n'/}"
+    next="${next#"${next%%[![:space:]]*}"}"
+    next="${next%"${next##*[![:space:]]}"}"
+    if [[ "$scope" == "system" && ( -z "$next" || "$next" == "0" || "$next" == "n/a" || "$next" == "infinity" ) ]]; then
+        next=$(_gm_sudo systemctl show ghostmode-timer.timer -p NextElapseUSecRealtime --value 2>/dev/null || true)
+        next="${next//$'\r'/}"
+        next="${next//$'\n'/}"
+        next="${next#"${next%%[![:space:]]*}"}"
+        next="${next%"${next##*[![:space:]]}"}"
+    fi
+    if [[ -n "$next" && "$next" != "0" && "$next" != "n/a" && "$next" != "infinity" ]]; then
+        printf '%s\n' "$next"
+        return 0
+    fi
+
+    local line=""
+    if [[ "$scope" == "user" ]]; then
+        line=$(systemctl --user list-timers --all ghostmode-timer.timer --no-legend --no-pager 2>/dev/null | head -n 1 || true)
+    else
+        line=$(systemctl list-timers --all ghostmode-timer.timer --no-legend --no-pager 2>/dev/null | head -n 1 || true)
+    fi
+    if [[ "$line" =~ ^([A-Za-z]{3}[[:space:]]+[0-9]{4}-[0-9]{2}-[0-9]{2}[[:space:]]+[0-9:]{8}[[:space:]]+[^[:space:]]+) ]]; then
+        printf '%s\n' "${BASH_REMATCH[1]}"
+        return 0
+    fi
+
+    local interval="1h" rel="" last_rt="" active="" est=""
+    [[ -f "$GHOSTMODE_TIMER_INTERVAL_FILE" ]] && IFS= read -r interval < "$GHOSTMODE_TIMER_INTERVAL_FILE"
+    if [[ "$interval" =~ ^([0-9]+)s$ ]]; then
+        rel="${BASH_REMATCH[1]} seconds"
+    elif [[ "$interval" =~ ^([0-9]+)min$ ]]; then
+        rel="${BASH_REMATCH[1]} minutes"
+    elif [[ "$interval" =~ ^([0-9]+)h$ ]]; then
+        rel="${BASH_REMATCH[1]} hours"
+    elif [[ "$interval" =~ ^([0-9]+)d$ ]]; then
+        rel="${BASH_REMATCH[1]} days"
+    fi
+    last_rt=$("${show[@]}" show ghostmode-timer.timer -p LastTriggerUSecRealtime --value 2>/dev/null || true)
+    last_rt="${last_rt//$'\n'/}"
+    active=$("${show[@]}" is-active ghostmode-timer.service 2>/dev/null || true)
+    if [[ -n "$rel" && -n "$last_rt" && "$last_rt" != "n/a" && "$last_rt" != "0" ]]; then
+        est=$(date -d "$last_rt + $rel" '+%a %Y-%m-%d %H:%M:%S %z' 2>/dev/null || true)
+        if [[ -n "$est" ]]; then
+            if [[ "$active" == "activating" || "$active" == "active" ]]; then
+                printf '%s\n' "${est} (about ${interval} after this run)"
+            else
+                printf '%s\n' "~ ${est}"
+            fi
+            return 0
+        fi
+    fi
+    if [[ -n "$rel" ]]; then
+        printf '%s\n' "within ${interval} of the timer arming"
+        return 0
+    fi
+    printf '%s\n' "not scheduled"
 }

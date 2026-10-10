@@ -36,7 +36,7 @@ case "$name" in
         updatedb | anonsurf | useradd | userdel | usermod | mkdir | chown | chmod | \
         mv | rm | pkill | kill | openvpn | wg-quick | loginctl | apt-get | sed | \
         tee | grep | install | systemd-machine-id-setup | dbus-uuidgen | ss | du | \
-        ls | test | wc | cp | runuser)
+        ls | test | wc | cp | runuser | ln)
         ;;
     *)
         echo "ghostmode-priv: refused" >&2

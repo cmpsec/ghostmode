@@ -40,7 +40,14 @@ cmd_status() {
     echo ""
     echo -e "${BLD}${CYN}[ Recently Used Files ]${RST}"
     _check_recently_used
+    _check_dbus_opened
+    _check_document_viewers
+    _check_telemetry
     _check_dir  ~/.local/share/gvfs-metadata  "gvfs-metadata"
+
+    echo ""
+    echo -e "${BLD}${CYN}[ Messengers ]${RST}"
+    _check_messengers
 
     echo ""
     echo -e "${BLD}${CYN}[ Cache & Thumbnails ]${RST}"
@@ -71,12 +78,14 @@ cmd_status() {
     _check_dir  ~/.config/Cursor/Crashpad   "Cursor/Crashpad"
 
     echo ""
-    echo -e "${BLD}${CYN}[ Claude Code / Claude Desktop ]${RST}"
+    echo -e "${BLD}${CYN}[ Claude / Antigravity / OpenCode ]${RST}"
     _check_claude_traces
     _check_dir  ~/.claude/todos             "claude/todos"
     _check_dir  ~/.claude/shell-snapshots   "claude/shell-snap"
     _check_dir  ~/.claude/statsig           "claude/statsig"
     _check_dir  ~/.claude/ide               "claude/ide"
+    _check_dir  ~/.claude/sessions          "claude/sessions"
+    _check_dir  ~/.claude/file-history      "claude/file-history"
     _check_dir  ~/.config/Claude/logs       "Claude/logs"
     _check_dir  ~/.config/Claude/Cache      "Claude/Cache"
     _check_dir  ~/.config/Claude/CachedData "Claude/CachedData"
@@ -84,6 +93,7 @@ cmd_status() {
     _check_dir  ~/.config/Claude/Backups    "Claude/Backups"
     _check_dir  ~/.config/Claude/GPUCache   "Claude/GPUCache"
     _check_dir  ~/.config/Claude/Crashpad   "Claude/Crashpad"
+    _check_coding_agents
 
     echo ""
     echo -e "${BLD}${CYN}[ Temp Directories ]${RST}"
@@ -193,23 +203,10 @@ cmd_status() {
     fi
     if [[ -n "$sctl" ]]; then
         echo -e "  ${GRN}✔${RST}  ${padded} → ${GRN}ACTIVE${RST} (${sctl}-level)"
-        # نستخدم خاصية systemd الخام (NextElapseUSecRealtime) بدل تحليل أعمدة
-        # list-timers النصية — تلك الأعمدة تنهار لو كان التشغيل الحالي لسه
-        # شغّال (مثلًا تعويض Persistent=true بعد الإقلاع)، لأن NEXT يطلع
-        # شرطة "-" وحيدة فتزيح كل الأعمدة اللي بعدها
-        local next_val
-        if [[ "$sctl" == "system" ]]; then
-            next_val=$(systemctl show ghostmode-timer.timer -p NextElapseUSecRealtime --value 2>/dev/null)
-        else
-            next_val=$(systemctl --user show ghostmode-timer.timer -p NextElapseUSecRealtime --value 2>/dev/null)
-        fi
-        if [[ -n "$next_val" && "$next_val" != "0" && "$next_val" != "n/a" ]]; then
-            local pd2
-            pd2=$(printf "%-22s" "next trigger")
-            echo -e "  ${GRN}◷${RST}  ${pd2} → ${YLW}${next_val}${RST}"
-        else
-            echo -e "  ${GRY}◷${RST}  $(printf "%-22s" "next trigger") → ${GRY}calculating (current run may still be in progress)${RST}"
-        fi
+        local next_val pd2
+        next_val=$(_timer_next_text "$sctl")
+        pd2=$(printf "%-22s" "next trigger")
+        echo -e "  ${GRN}◷${RST}  ${pd2} → ${YLW}${next_val}${RST}"
     else
         echo -e "  ${RED}✘${RST}  ${padded} → ${RED}INACTIVE${RST}"
     fi
@@ -642,30 +639,82 @@ _c_pentest() {
     return 0
 }
 
+_coding_agent_busy() {
+    _proc_running claude Claude antigravity antigravity-ide opencode && return 0
+    pgrep -u "$UID" -f '/opt/antigravity|/antigravity-ide' >/dev/null 2>&1
+}
+
+_wipe_dir() {
+    local d="$1"
+    [[ -d "$d" ]] || return 0
+    find "$d" -mindepth 1 -delete 2>/dev/null || true
+}
+
+_wipe_sqlite_under() {
+    local root="$1" db
+    [[ -d "$root" ]] || return 0
+    while IFS= read -r db; do
+        rm -f -- "$db" "${db}-wal" "${db}-shm" 2>/dev/null || true
+    done < <(find "$root" -type f \( -name '*.db' -o -name '*.sqlite' -o -name '*.sqlite3' -o -name '*.vscdb' \) 2>/dev/null)
+}
+
 _c_claude() {
-    local claude_up=0
-    if _proc_running claude Claude; then
-        claude_up=1
-    fi
-    if [[ "$claude_up" -eq 0 ]]; then
-        local db
-        while IFS= read -r db; do
-            rm -f -- "$db" "${db}-wal" "${db}-shm" 2>/dev/null || true
-        done < <(find "$HOME/.claude" "$HOME/.config/Claude" -type f \
-            \( -name '*.db' -o -name '*.sqlite' -o -name '*.sqlite3' \) 2>/dev/null)
-        rm -rf -- "$HOME/.claude/projects" "$HOME/.claude/todos" \
-            "$HOME/.claude/shell-snapshots" "$HOME/.claude/statsig" \
-            "$HOME/.claude/ide" 2>/dev/null || true
-        rm -f -- "$HOME/.claude.json" "$HOME/.claude.json.backup" 2>/dev/null || true
-    else
-        _GM_STEP_MSG="Claude is running, skipped its session databases"
-    fi
-    rm -rf -- "$HOME/.config/Claude/Cache" "$HOME/.config/Claude/CachedData" \
+    local d busy=0
+    _coding_agent_busy && busy=1
+    for d in \
+        "$HOME/.claude/todos" "$HOME/.claude/shell-snapshots" "$HOME/.claude/statsig" \
+        "$HOME/.claude/ide" "$HOME/.claude/debug" "$HOME/.claude/telemetry" \
+        "$HOME/.claude/paste-cache" "$HOME/.claude/cache" "$HOME/.cache/claude" \
+        "$HOME/.config/Claude/Cache" "$HOME/.config/Claude/CachedData" \
         "$HOME/.config/Claude/GPUCache" "$HOME/.config/Claude/Crashpad" \
-        "$HOME/.config/Claude/Backups" "$HOME/.config/Claude/logs" 2>/dev/null || true
-    rm -rf -- "$HOME/.config/Claude/User/History" 2>/dev/null || true
+        "$HOME/.config/Claude/Backups" "$HOME/.config/Claude/logs" \
+        "$HOME/.config/Claude/User/History" \
+        "$HOME/.cache/antigravity" "$HOME/.cache/antigravity-ide-backups" \
+        "$HOME/.cache/opencode" "$HOME/.local/share/opencode/log"
+    do
+        _wipe_dir "$d"
+    done
     rm -f -- "$HOME/.config/Claude/Cookies" "$HOME/.config/Claude/Cookies-journal" 2>/dev/null || true
-    if [[ "$claude_up" -eq 1 ]]; then
+    local cfg
+    for cfg in "$HOME/.config/Antigravity" "$HOME/.config/Antigravity IDE"; do
+        [[ -d "$cfg" ]] || continue
+        for d in Cache CachedData GPUCache "Code Cache" Crashpad logs Backups \
+            "DawnGraphiteCache" "DawnWebGPUCache" Partitions IndexedDB \
+            "Session Storage" "Local Storage" blob_storage Network; do
+            _wipe_dir "$cfg/$d"
+        done
+    done
+    if [[ "$busy" -eq 0 ]]; then
+        for d in \
+            "$HOME/.claude/projects" "$HOME/.claude/sessions" "$HOME/.claude/file-history" \
+            "$HOME/.claude/plans" \
+            "$HOME/.gemini/antigravity" "$HOME/.gemini/antigravity-ide" \
+            "$HOME/.gemini/antigravity-cli" "$HOME/.gemini/antigravity-browser-profile" \
+            "$HOME/.antigravity-ide" \
+            "$HOME/.local/share/opencode" "$HOME/.local/state/opencode"
+        do
+            rm -rf -- "$d" 2>/dev/null || true
+        done
+        rm -f -- "$HOME/.claude.json" "$HOME/.claude.json.backup" \
+            "$HOME/.claude/history.jsonl" 2>/dev/null || true
+        _wipe_sqlite_under "$HOME/.claude"
+        _wipe_sqlite_under "$HOME/.config/Claude"
+        _wipe_sqlite_under "$HOME/.config/claude"
+        for cfg in "$HOME/.config/Antigravity" "$HOME/.config/Antigravity IDE"; do
+            _wipe_dir "$cfg/User/workspaceStorage"
+            _wipe_dir "$cfg/User/History"
+            _wipe_sqlite_under "$cfg/User/globalStorage"
+        done
+    fi
+    local left=""
+    for d in "$HOME/.claude/projects" "$HOME/.local/share/opencode" \
+        "$HOME/.gemini/antigravity-ide" "$HOME/.config/Antigravity IDE/User/workspaceStorage"; do
+        if [[ -d "$d" && -n "$(find "$d" -mindepth 1 -print -quit 2>/dev/null)" ]]; then
+            left=1
+        fi
+    done
+    if [[ -n "$left" ]]; then
+        _GM_STEP_MSG="Claude, Antigravity, or OpenCode session files are still on disk"
         return 2
     fi
     return 0
@@ -731,7 +780,7 @@ _run_clean() {
     _step "User journal" _c_user_journal
     _step "DNS and ARP" _c_dns
     _step "Pentest tools" _c_pentest
-    _step "Claude" _c_claude
+    _step "Claude, Antigravity, OpenCode" _c_claude
     _step "Custom paths" _c_custom
     if _shield_tor_running; then
         _shield_audit || _GM_STEP_FAILS=$((_GM_STEP_FAILS + 1))

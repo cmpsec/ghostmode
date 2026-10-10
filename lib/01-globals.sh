@@ -11,7 +11,7 @@
 # `cat << EOF` heredoc, which never interprets escapes and would print the
 # literal text "\033[1m" instead of a color. A real byte here works
 # everywhere (echo, echo -e, printf, cat heredocs) with no exceptions.
-GHOSTMODE_VERSION="3.0"
+GHOSTMODE_VERSION="3.1"
 
 # full | auto | delete. auto skips live app databases and never passes --force.
 GHOSTMODE_MODE="full"

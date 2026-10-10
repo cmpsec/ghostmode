@@ -17,6 +17,7 @@ cmd_destroy() {
     echo "    exempted torbrowser user"
     echo "  - Remove every systemd unit this tool created"
     echo "  - Restore zsh-autosuggestions and GeoClue to their original state"
+    echo "  - Remove packages this installer added (Tor, anonsurf, Tor Browser, and the rest)"
     echo "  - Delete all Ghost Mode config/state under ~/.config/ghostmode"
     echo "    including the saved sudo password"
     echo "  - Remove the shell aliases it added, if any"
@@ -67,7 +68,33 @@ cmd_destroy() {
     echo -e "${BLD}${CYN}[ 5/7 ] Restoring shell history, then suggestions ]${RST}"
     _history_destroy_restore || echo -e "  ${RED}✘${RST}  Could not fully restore the suggestion plugin"
 
-    echo -e "${BLD}${CYN}[ 6/7 ] Removing config, state, and shell aliases ]${RST}"
+    echo -e "${BLD}${CYN}[ 6/8 ] Removing packages this install added ]${RST}"
+    _documents_release || true
+    _telemetry_restore || true
+    local manifest="$HOME/.config/ghostmode/installed.manifest" line name
+    local -a purge_pkgs=()
+    if [[ -f "$manifest" ]]; then
+        while IFS= read -r line; do
+            case "$line" in
+                pkg:*)
+                    name="${line#pkg:}"
+                    dpkg -s "$name" >/dev/null 2>&1 && purge_pkgs+=("$name")
+                    ;;
+                extra:torbrowser-bundle)
+                    rm -rf -- "$HOME/.local/share/torbrowser" 2>/dev/null || true
+                    ;;
+            esac
+        done < "$manifest"
+    fi
+    if [[ ${#purge_pkgs[@]} -gt 0 ]]; then
+        _gm_sudo apt-get purge -y -qq -o Dpkg::Use-Pty=0 "${purge_pkgs[@]}" >/dev/null 2>&1 || true
+        _gm_sudo apt-get autoremove -y -qq -o Dpkg::Use-Pty=0 >/dev/null 2>&1 || true
+    fi
+    if [[ -f "$manifest" ]] && grep -q 'kali-anonsurf\|pkg:i2p' "$manifest"; then
+        _gm_sudo rm -f /etc/apt/sources.list.d/i2p.list /usr/bin/anonsurf 2>/dev/null || true
+    fi
+
+    echo -e "${BLD}${CYN}[ 7/8 ] Removing config, state, and shell aliases ]${RST}"
     _gm_sudo rm -f /etc/sudoers.d/ghostmode /usr/local/libexec/ghostmode-priv \
         /etc/security/limits.d/ghostmode-nocore.conf \
         /etc/NetworkManager/conf.d/ghostmode-wifi-rand.conf \
@@ -78,7 +105,7 @@ cmd_destroy() {
         [[ -f "$rc" ]] && sed -i '/# --- Ghost Mode ---/,+2d' "$rc" 2>/dev/null
     done
 
-    echo -e "${BLD}${CYN}[ 7/7 ] Removing the script itself ]${RST}"
+    echo -e "${BLD}${CYN}[ 8/8 ] Removing the script itself ]${RST}"
     echo -e "  ${RED}${BLD}[-] Ghost Mode has fully removed itself. Goodbye.${RST}"
     rm -f -- "$HOME/.local/bin/ghostmode"
 }

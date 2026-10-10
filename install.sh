@@ -63,20 +63,141 @@ DEST_LIB="$HOME/.local/share/ghostmode/lib"
 [[ -d "$LIB_SRC" ]] || fail "lib/ not found — make sure you're running this from inside the project folder"
 
 # ---------- 1/8: Dependencies ----------
-step "1/8  Checking dependencies, installing anything missing"
-NEED_PKGS=()
-command -v curl     >/dev/null 2>&1 || NEED_PKGS+=("curl")
-command -v ss       >/dev/null 2>&1 || NEED_PKGS+=("iproute2")
-command -v iptables >/dev/null 2>&1 || NEED_PKGS+=("iptables")
-command -v lspci    >/dev/null 2>&1 || NEED_PKGS+=("pciutils")
-if [[ ${#NEED_PKGS[@]} -eq 0 ]]; then
-    ok "All dependencies already present"
+step "1/8  Checking dependencies"
+umask 077
+mkdir -p "$HOME/.config/ghostmode"
+chmod 700 "$HOME/.config/ghostmode"
+MANIFEST="$HOME/.config/ghostmode/installed.manifest"
+touch "$MANIFEST"
+chmod 600 "$MANIFEST"
+PKG_BEFORE=$(mktemp)
+PKG_AFTER=$(mktemp)
+dpkg-query -W -f '${Package}\n' 2>/dev/null | sort -u > "$PKG_BEFORE"
+
+_apt_quiet() {
+    DEBIAN_FRONTEND=noninteractive \
+        echo "$LAPTOP_PASS" | sudo -S -p '' apt-get "$@" -o Dpkg::Use-Pty=0 -qq >/dev/null 2>&1
+}
+
+_dep_bar() {
+    local cur="$1" total="$2" label="$3"
+    local width=24 filled empty bar pad
+    filled=$(( cur * width / total ))
+    empty=$(( width - filled ))
+    printf -v bar '%*s' "$filled" ''
+    bar=${bar// /#}
+    printf -v pad '%*s' "$empty" ''
+    printf '\r  \033[0;36m[%s%s]\033[0m %2d/%d  %-28s' "$bar" "$pad" "$cur" "$total" "$label"
+}
+
+DEP_PKGS=(
+    curl ca-certificates git iproute2 iptables pciutils ffmpeg
+    libimage-exiftool-perl mat2 tor geoclue-2.0 torbrowser-launcher
+    x11-xserver-utils network-manager procps e2fsprogs gnupg fakeroot xz-utils
+)
+DEP_TOTAL=$(( ${#DEP_PKGS[@]} + 2 ))
+DEP_FAIL=()
+DEP_I=0
+NEED_UPDATE=0
+for pkg in "${DEP_PKGS[@]}"; do
+    if ! dpkg -s "$pkg" >/dev/null 2>&1; then
+        NEED_UPDATE=1
+        break
+    fi
+done
+if [[ "$NEED_UPDATE" -eq 1 ]] || ! dpkg -s kali-anonsurf >/dev/null 2>&1; then
+    _apt_quiet update || true
+fi
+for pkg in "${DEP_PKGS[@]}"; do
+    DEP_I=$(( DEP_I + 1 ))
+    if dpkg -s "$pkg" >/dev/null 2>&1; then
+        _dep_bar "$DEP_I" "$DEP_TOTAL" "$pkg"
+        continue
+    fi
+    _dep_bar "$DEP_I" "$DEP_TOTAL" "$pkg"
+    if ! _apt_quiet install -y "$pkg"; then
+        DEP_FAIL+=("$pkg")
+    fi
+done
+
+DEP_I=$(( DEP_I + 1 ))
+_dep_bar "$DEP_I" "$DEP_TOTAL" "anonsurf"
+if ! command -v anonsurf >/dev/null 2>&1; then
+    BUILD_DIR=$(mktemp -d /tmp/gm-anonsurf.XXXXXX)
+    if git clone --depth 1 -q https://github.com/Und3rf10w/kali-anonsurf.git "$BUILD_DIR/kali-anonsurf" 2>/dev/null; then
+        chmod +x "$BUILD_DIR/kali-anonsurf/installer.sh"
+        echo "$LAPTOP_PASS" | sudo -S -p '' bash "$BUILD_DIR/kali-anonsurf/installer.sh" >/dev/null 2>&1 \
+            || DEP_FAIL+=("anonsurf")
+    else
+        DEP_FAIL+=("anonsurf")
+    fi
+    rm -rf "$BUILD_DIR"
+fi
+
+DEP_I=$(( DEP_I + 1 ))
+_dep_bar "$DEP_I" "$DEP_TOTAL" "Tor Browser"
+TB_BIN="$HOME/.local/share/torbrowser/tbb/x86_64/tor-browser/Browser/start-tor-browser"
+TB_MARK="$HOME/.config/ghostmode/torbrowser.installed"
+if [[ ! -x "$TB_BIN" ]]; then
+    ARCH=$(uname -m)
+    case "$ARCH" in
+        aarch64|arm64) TB_MAR=Linux_aarch64-gcc3; TB_NAME=linux-aarch64 ;;
+        *) TB_MAR=Linux_x86_64-gcc3; TB_NAME=linux-x86_64 ;;
+    esac
+    TB_XML=$(curl -fsSL --max-time 40 "https://aus1.torproject.org/torbrowser/update_3/release/${TB_MAR}/x/ALL" 2>/dev/null || true)
+    TB_VER=$(printf '%s\n' "$TB_XML" | sed -n 's/.*appVersion="\([^"]*\)".*/\1/p' | head -n 1)
+    if [[ -n "$TB_VER" ]]; then
+        TB_URL="https://dist.torproject.org/torbrowser/${TB_VER}/tor-browser-${TB_NAME}-${TB_VER}.tar.xz"
+        TB_TMP=$(mktemp -d /tmp/gm-tbb.XXXXXX)
+        if curl -fsSL --retry 2 --max-time 300 -o "$TB_TMP/tbb.tar.xz" "$TB_URL" 2>/dev/null \
+            && curl -fsSL --max-time 40 -o "$TB_TMP/tbb.tar.xz.asc" "${TB_URL}.asc" 2>/dev/null; then
+            TB_KEY=""
+            for k in /usr/share/torbrowser-launcher/tor-browser-developers.asc \
+                     /usr/share/torbrowser-launcher/signing-keys/*.asc; do
+                [[ -f "$k" ]] && TB_KEY=$k && break
+            done
+            TB_OK=0
+            if [[ -n "$TB_KEY" ]]; then
+                TB_GNUPG=$(mktemp -d /tmp/gm-gpg.XXXXXX)
+                if GNUPGHOME="$TB_GNUPG" gpg --batch --import "$TB_KEY" >/dev/null 2>&1 \
+                    && GNUPGHOME="$TB_GNUPG" gpg --batch --verify "$TB_TMP/tbb.tar.xz.asc" "$TB_TMP/tbb.tar.xz" >/dev/null 2>&1; then
+                    TB_OK=1
+                fi
+                rm -rf "$TB_GNUPG"
+            elif xz -t "$TB_TMP/tbb.tar.xz" >/dev/null 2>&1; then
+                TB_OK=1
+            fi
+            if [[ "$TB_OK" -eq 1 ]]; then
+                mkdir -p "$HOME/.local/share/torbrowser/tbb/x86_64"
+                tar -xJf "$TB_TMP/tbb.tar.xz" -C "$HOME/.local/share/torbrowser/tbb/x86_64" \
+                    && printf '1\n' > "$TB_MARK"
+            else
+                DEP_FAIL+=("torbrowser")
+            fi
+        else
+            DEP_FAIL+=("torbrowser")
+        fi
+        rm -rf "$TB_TMP"
+    else
+        DEP_FAIL+=("torbrowser")
+    fi
+fi
+printf '\n'
+dpkg-query -W -f '${Package}\n' 2>/dev/null | sort -u > "$PKG_AFTER"
+NEW_PKGS=$(comm -13 "$PKG_BEFORE" "$PKG_AFTER" || true)
+if [[ -n "$NEW_PKGS" ]]; then
+    while IFS= read -r pkg; do
+        [[ -n "$pkg" ]] || continue
+        grep -qx "pkg:${pkg}" "$MANIFEST" 2>/dev/null || printf 'pkg:%s\n' "$pkg" >> "$MANIFEST"
+    done <<< "$NEW_PKGS"
+fi
+[[ -f "$TB_MARK" ]] && grep -qx 'extra:torbrowser-bundle' "$MANIFEST" 2>/dev/null \
+    || { [[ -f "$TB_MARK" ]] && printf 'extra:torbrowser-bundle\n' >> "$MANIFEST"; }
+rm -f "$PKG_BEFORE" "$PKG_AFTER"
+if [[ ${#DEP_FAIL[@]} -eq 0 ]]; then
+    ok "Dependencies ready"
 else
-    echo "  Installing: ${NEED_PKGS[*]}"
-    echo "$LAPTOP_PASS" | sudo -S apt-get update -qq 2>/dev/null
-    echo "$LAPTOP_PASS" | sudo -S apt-get install -y "${NEED_PKGS[@]}" 2>/dev/null \
-        && ok "Installed: ${NEED_PKGS[*]}" \
-        || echo -e "  ${YLW}!${RST} Some failed to install — you can install them manually later"
+    echo -e "  ${YLW}!${RST} Still missing: ${DEP_FAIL[*]}"
 fi
 
 # ---------- 2/8: Install entry point + modules ----------
@@ -235,6 +356,10 @@ _history_write_guard
 _history_save_sizes
 _history_ensure_zshrc_line
 ok "Shell history guard installed. New terminals will not record commands."
+# shellcheck source=lib/17-extra.sh
+source "$DEST_LIB/17-extra.sh"
+_documents_prevent || true
+_telemetry_quiet || true
 
 CORE_TMP=$(mktemp)
 printf '%s\n' '* hard core 0' > "$CORE_TMP"

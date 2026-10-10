@@ -180,17 +180,12 @@ _check_cursor_cache() {
         echo -e "  ${GRN}✔${RST}  ${padded} → ${GRN}not found (clean)${RST}"
         return
     fi
-    local cursor_running=0
-    pgrep -x "cursor" -a 2>/dev/null | grep -qv "grep" && cursor_running=1
-    pgrep -f "cursor.appimage" 2>/dev/null | grep -qv "grep" && cursor_running=1
     local count sz
     count=$(find "$path" -maxdepth 2 -not -path "$path" 2>/dev/null | wc -l)
     count=$(( count + 0 ))
     sz=$(du -sh "$path" 2>/dev/null | cut -f1)
     if [[ "$count" -eq 0 ]]; then
         echo -e "  ${GRN}✔${RST}  ${padded} → ${GRN}empty${RST}"
-    elif [[ "$cursor_running" -eq 1 ]]; then
-        echo -e "  ${GRY}~${RST}  ${padded} → ${GRY}active (Cursor running, ${count} items, ${sz})${RST}"
     else
         echo -e "  ${RED}✘${RST}  ${padded} → ${YLW}${count} items${RST} (${sz})"
         ls "$path" 2>/dev/null | head -5 | sed 's/^/       ╰ /'
@@ -940,6 +935,44 @@ _check_claude_traces() {
     else
         echo -e "  ${GRN}✔${RST}  ${padded} → ${GRN}clean${RST}"
     fi
+}
+
+_check_coding_agents() {
+    local item path label padded count
+    local -a items=(
+        "$HOME/.gemini/antigravity|antigravity data"
+        "$HOME/.gemini/antigravity-ide|antigravity-ide"
+        "$HOME/.gemini/antigravity-cli|antigravity-cli"
+        "$HOME/.gemini/antigravity-browser-profile|antigravity browser"
+        "$HOME/.antigravity-ide|antigravity-ide home"
+        "$HOME/.config/Antigravity|Antigravity config"
+        "$HOME/.config/Antigravity IDE|Antigravity IDE"
+        "$HOME/.local/share/opencode|opencode data"
+        "$HOME/.local/state/opencode|opencode state"
+        "$HOME/.cache/opencode|opencode cache"
+    )
+    for item in "${items[@]}"; do
+        path="${item%%|*}"
+        label="${item##*|}"
+        padded=$(printf "%-22s" "$label")
+        if [[ ! -e "$path" ]]; then
+            echo -e "  ${GRN}✔${RST}  ${padded} → ${GRN}not found (clean)${RST}"
+            continue
+        fi
+        if [[ -d "$path" ]]; then
+            count=$(find "$path" -mindepth 1 2>/dev/null | wc -l)
+            count=$((count + 0))
+            if [[ "$count" -eq 0 ]]; then
+                echo -e "  ${GRN}✔${RST}  ${padded} → ${GRN}empty${RST}"
+            else
+                echo -e "  ${RED}✘${RST}  ${padded} → ${YLW}${count} items${RST}"
+            fi
+        elif [[ -s "$path" ]]; then
+            echo -e "  ${RED}✘${RST}  ${padded} → ${YLW}present${RST}"
+        else
+            echo -e "  ${GRN}✔${RST}  ${padded} → ${GRN}empty${RST}"
+        fi
+    done
 }
 
 _check_system_info() {

@@ -225,10 +225,6 @@ _check_cursor_databases() {
 _check_cursor_sockets() {
     local padded count=0
     padded=$(printf "%-22s" "cursor sockets")
-    if [[ -n "$(_cursor_running)" ]]; then
-        echo -e "  ${GRY}~${RST}  ${padded} → ${GRY}Cursor is open${RST}"
-        return
-    fi
     local s base
     shopt -s nullglob
     for s in /tmp/*cursor* /tmp/*agent* /tmp/cursor-agent-worker-*.sock; do
@@ -241,6 +237,6 @@ _check_cursor_sockets() {
     if [[ "$count" -eq 0 ]]; then
         echo -e "  ${GRN}✔${RST}  ${padded} → ${GRN}none${RST}"
     else
-        echo -e "  ${RED}✘${RST}  ${padded} → ${YLW}${count} leftover socket(s)${RST}"
+        echo -e "  ${RED}✘${RST}  ${padded} → ${YLW}${count} socket file(s)${RST}"
     fi
 }

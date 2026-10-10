@@ -128,6 +128,7 @@ ghostmode location off               Restore the real location
 ghostmode fingerprint rotate       Rotate MAC address + hostname once, right now
 ghostmode fingerprint rotate --machine-id
                                    Also regenerate /etc/machine-id. This drops sessions and needs a reboot. The default does not touch it.
+ghostmode fingerprint rotate --all MAC, hostname, machine-id, and local telemetry ids. Asks for ROTATE. Does not contact a telemetry server.
 ghostmode fingerprint auto on      Rotate both automatically on every boot
 ghostmode fingerprint auto off     Stop automatic rotation
 
@@ -244,7 +245,11 @@ ghostmode/
 
 `bin/ghostmode` sources every file in `lib/` and nothing else; it carries no feature logic itself. Each module in `lib/` is independently syntax-checkable and has a single, named responsibility. Persistence (the hourly timer, Tor-on-boot, the kill switch watchdog, fingerprint rotation) runs as **system-level `systemd` units** with an explicit `User=` directive, rather than `--user` units relying on login-session lingering — the latter turned out to be unreliable across reboots in testing, which is why the architecture uses the former.
 
-**Dependencies:** `bash`, `systemd`, `iptables`, `iproute2` (`ip`, `ss`), `curl`, `ffmpeg`, `exiftool` (or `mat2`, auto-detected if present), `tor` (installed automatically via [Und3rf10w/kali-anonsurf](https://github.com/Und3rf10w/kali-anonsurf) on first `tor on`, since it has no official `apt` package), GeoClue2 (ships by default on Kali).
+**Dependencies:** `install.sh` checks them at the start and installs anything missing behind a single progress line (no apt download log). That set includes `curl`, `ffmpeg`, `exiftool`, `mat2`, `tor`, GeoClue2, `torbrowser-launcher`, the Tor Browser bundle, and [kali-anonsurf](https://github.com/Und3rf10w/kali-anonsurf). `ghostmode destroy` removes only the packages that this install added.
+
+Opening a PDF or office file is kept out of the recent-file list, the document portal, and viewer history. `ghostmode status` lists files the session bus still has open, and the cleanup removes them even while that portal is connected. Telegram, Signal, Element, and Discord local data directories are removed on cleanup; the copy on their servers is not.
+
+The same cleanup clears local session data for Cursor, Claude Code, Claude Desktop, Google Antigravity (`~/.config/Antigravity`, `~/.config/Antigravity IDE`, `~/.gemini/antigravity-ide`), and OpenCode (`~/.local/share/opencode`). It does not delete the installed programs, and it does not delete OpenCode's config directory of agents and skills.
 
 ---
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Ghost Mode V3.0 — entry point. Sources every module under lib/ and
+# Ghost Mode V3.1 — entry point. Sources every module under lib/ and
 # dispatches to the requested command. See lib/*.sh for the actual logic —
 # this file only wires things together.
 
@@ -63,7 +63,8 @@ cmd_help() {
     echo -e "${BLD}Fingerprint rotation (MAC + hostname):${RST}"
     echo -e "  ${GRN}ghostmode fingerprint rotate${RST}    Rotate MAC and hostname once"
     echo -e "  ${GRN}ghostmode fingerprint rotate --machine-id${RST}  Also regenerate machine-id (reboot)"
-    echo -e "  ${GRN}ghostmode fingerprint auto on${RST}   Rotate automatically every boot"
+    echo -e "  ${GRN}ghostmode fingerprint rotate --all${RST}  MAC, hostname, machine-id, and local telemetry ids"
+    echo -e "  ${GRN}ghostmode fingerprint auto on${RST}   Rotate MAC and hostname every boot"
     echo -e "  ${GRN}ghostmode fingerprint auto off${RST}  Stop automatic rotation"
     echo ""
     echo -e "${BLD}Custom paths (unlimited, wiped every clean/delete/auto run):${RST}"
@@ -85,6 +86,9 @@ cmd_help() {
     echo -e "  ${GRY}The sudo password is saved once at install (~/.config/ghostmode/sudo.pass) and reused automatically.${RST}"
     echo -e "  ${GRY}No log is kept of what was cleared. Green is not a claim that the disk, router, or cloud is clean.${RST}"
     echo -e "  ${GRY}Closing Cursor's state database logs you out of Cursor. Shell suggestions return only after destroy, and only after history is emptied.${RST}"
+    echo -e "  ${GRY}Status lists stored traces. It does not report whether Cursor is open.${RST}"
+    echo -e "  ${GRY}Telegram, Signal, Element, and Discord local data is removed on cleanup. Server copies stay.${RST}"
+    echo -e "  ${GRY}Claude, Antigravity, and OpenCode session data is cleared with the same cleanup. Their programs stay installed.${RST}"
     echo ""
 }
 

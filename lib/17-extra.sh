@@ -167,11 +167,77 @@ _clean_named_subdirs() {
     done
 }
 
+_messenger_roots() {
+    printf '%s\n' \
+        "$HOME/.local/share/TelegramDesktop" \
+        "$HOME/.local/share/telegram-desktop" \
+        "$HOME/.TelegramDesktop" \
+        "$HOME/Downloads/Telegram Desktop" \
+        "$HOME/.var/app/org.telegram.desktop" \
+        "$HOME/snap/telegram-desktop/common" \
+        "$HOME/.config/Signal" \
+        "$HOME/.config/Signal Beta" \
+        "$HOME/.config/Signal-development" \
+        "$HOME/.var/app/org.signal.Signal" \
+        "$HOME/snap/signal-desktop/common" \
+        "$HOME/.config/Element" \
+        "$HOME/.config/Element-Nightly" \
+        "$HOME/.config/Riot" \
+        "$HOME/.var/app/im.riot.Riot" \
+        "$HOME/snap/element-desktop/common" \
+        "$HOME/.config/discord" \
+        "$HOME/.config/discordcanary" \
+        "$HOME/.config/discordptb" \
+        "$HOME/.config/discorddevelopment" \
+        "$HOME/.config/Vesktop" \
+        "$HOME/.config/WebCord" \
+        "$HOME/.config/ArmCord" \
+        "$HOME/.var/app/com.discordapp.Discord" \
+        "$HOME/.var/app/dev.vencord.Vesktop" \
+        "$HOME/snap/discord/common" \
+        "$HOME/.cache/TelegramDesktop" \
+        "$HOME/.cache/signal-desktop" \
+        "$HOME/.cache/element-desktop" \
+        "$HOME/.cache/discord"
+}
+
 _clean_messengers() {
-    _clean_named_subdirs "$HOME/.local/share/TelegramDesktop" cache logs media_cache Cache
-    _clean_named_subdirs "$HOME/.config/Element" Cache logs media_cache "Code Cache"
-    _clean_named_subdirs "$HOME/.config/discord" Cache logs "Code Cache" GPUCache
-    _clean_named_subdirs "$HOME/.config/Signal" logs Cache "Code Cache"
+    local root
+    while IFS= read -r root; do
+        [[ -n "$root" && -e "$root" ]] || continue
+        if [[ -d "$root" ]]; then
+            find "$root" -mindepth 1 -delete 2>/dev/null || rm -rf -- "$root" 2>/dev/null || true
+        else
+            rm -f -- "$root" 2>/dev/null || true
+        fi
+        if _dir_has_entries "$root" || [[ -s "$root" ]]; then
+            _extra_bump 1 "messenger data remains at ${root/#$HOME/\~}"
+        fi
+    done < <(_messenger_roots)
+}
+
+_check_messengers() {
+    local root padded count
+    local any=0
+    while IFS= read -r root; do
+        [[ -e "$root" ]] || continue
+        if [[ -d "$root" ]] && ! _dir_has_entries "$root"; then
+            continue
+        fi
+        any=1
+        padded=$(printf "%-22s" "${root/#$HOME/\~}")
+        if [[ -d "$root" ]]; then
+            count=$(find "$root" -mindepth 1 2>/dev/null | wc -l)
+            count=$((count + 0))
+            echo -e "  ${RED}✘${RST}  ${padded} → ${YLW}${count} items${RST}"
+        else
+            echo -e "  ${RED}✘${RST}  ${padded} → ${YLW}present${RST}"
+        fi
+    done < <(_messenger_roots)
+    if [[ "$any" -eq 0 ]]; then
+        padded=$(printf "%-22s" "telegram/signal/element/discord")
+        echo -e "  ${GRN}✔${RST}  ${padded} → ${GRN}no local data${RST}"
+    fi
 }
 
 _clean_thunderbird() {
@@ -209,21 +275,281 @@ _clean_terminal_histories() {
     done
 }
 
-_clean_libreoffice() {
-    [[ -d "$HOME/.config/libreoffice" ]] || return 0
-    find "$HOME/.config/libreoffice" -type d \( -name backup -o -name sessions \) \
-        -exec find {} -mindepth 1 -delete \; 2>/dev/null || true
-    local xcu
-    xcu=$(find "$HOME/.config/libreoffice" -name 'registrymodifications.xcu' -type f 2>/dev/null | head -n 1)
-    if [[ -n "$xcu" ]] && grep -q 'History' "$xcu" 2>/dev/null; then
-        _extra_bump 2 "LibreOffice recent-file list inside settings was left in place"
+_gtk_recent_off() {
+    local dir f created=0
+    for dir in "$HOME/.config/gtk-3.0" "$HOME/.config/gtk-4.0"; do
+        mkdir -p "$dir"
+        f="$dir/settings.ini"
+        if [[ ! -f "$f" ]]; then
+            created=1
+            printf '%s\n' '# ghostmode-recent-off' '[Settings]' \
+                'gtk-recent-files-max-age=0' 'gtk-recent-files-enabled=false' > "$f"
+            if [[ "$dir" == "$HOME/.config/gtk-3.0" ]]; then
+                _state_note_once "$HOME/.config/ghostmode/documents.state" "gtk3_created" "1"
+            else
+                _state_note_once "$HOME/.config/ghostmode/documents.state" "gtk4_created" "1"
+            fi
+            continue
+        fi
+        if ! grep -q 'ghostmode-recent-off' "$f" 2>/dev/null; then
+            printf '\n%s\n' '# ghostmode-recent-off' >> "$f"
+        fi
+        if grep -q '^gtk-recent-files-max-age=' "$f" 2>/dev/null; then
+            sed -i 's/^gtk-recent-files-max-age=.*/gtk-recent-files-max-age=0/' "$f"
+        else
+            printf '%s\n' 'gtk-recent-files-max-age=0' >> "$f"
+        fi
+        if grep -q '^gtk-recent-files-enabled=' "$f" 2>/dev/null; then
+            sed -i 's/^gtk-recent-files-enabled=.*/gtk-recent-files-enabled=false/' "$f"
+        else
+            printf '%s\n' 'gtk-recent-files-enabled=false' >> "$f"
+        fi
+    done
+    unset created
+    if command -v dconf >/dev/null 2>&1; then
+        dconf write /org/gnome/desktop/privacy/remember-recent-files false 2>/dev/null || true
+        dconf write /org/gnome/desktop/privacy/recent-files-max-age 0 2>/dev/null || true
     fi
 }
 
+_state_note_once() {
+    local file="$1" key="$2" val="$3"
+    mkdir -p "$(dirname "$file")"
+    chmod 700 "$(dirname "$file")" 2>/dev/null || true
+    [[ -f "$file" ]] && grep -q "^${key}=" "$file" && return 0
+    printf '%s=%s\n' "$key" "$val" >> "$file"
+    chmod 600 "$file" 2>/dev/null || true
+}
+
+_lock_empty_dir() {
+    local d="$1"
+    mkdir -p "$d"
+    find "$d" -mindepth 1 -delete 2>/dev/null || true
+    if command -v chattr >/dev/null 2>&1; then
+        chattr +i "$d" 2>/dev/null || _gm_sudo chattr +i "$d" 2>/dev/null || true
+    fi
+}
+
+_libreoffice_strip_history() {
+    local xcu="$1"
+    [[ -f "$xcu" ]] || return 0
+    python3 - "$xcu" << 'PY'
+import pathlib, re, sys
+p = pathlib.Path(sys.argv[1])
+text = p.read_text(errors="replace")
+text = re.sub(
+    r'<item\b[^>]*oor:path="[^"]*(?:Histories|HistoryInfo|PickList)[^"]*"[^>]*>.*?</item>',
+    "",
+    text,
+    flags=re.DOTALL,
+)
+text = re.sub(
+    r'<item\b[^>]*oor:path="[^"]*(?:Histories|HistoryInfo|PickList)[^"]*"[^>]*/>',
+    "",
+    text,
+)
+def fuse(text, path, prop, value):
+    block = (
+        f'<item oor:path="{path}"><prop oor:name="{prop}" oor:op="fuse">'
+        f"<value>{value}</value></prop></item>"
+    )
+    pat = re.compile(
+        rf'(<prop oor:name="{prop}"[^>]*>\s*<value>)[^<]*(</value>)'
+    )
+    if pat.search(text):
+        return pat.sub(rf"\g<1>{value}\2", text, count=1)
+    if "</oor:items>" in text:
+        return text.replace("</oor:items>", block + "</oor:items>", 1)
+    return text + "\n" + block + "\n"
+text = fuse(text, "/org.openoffice.Office.Common/History", "PickListSize", "0")
+text = fuse(text, "/org.openoffice.Office.Common/Misc", "CollectUsageInformation", "false")
+p.write_text(text)
+PY
+}
+
+_documents_prevent() {
+    rm -f -- "$HOME/.local/share/recently-used.xbel" "$HOME/.local/share/recently-used.xbel."* 2>/dev/null || true
+    ln -sfn /dev/null "$HOME/.local/share/recently-used.xbel" 2>/dev/null || _extra_bump 1 "could not divert recently-used.xbel"
+    _gtk_recent_off
+    _lock_empty_dir "$HOME/.cache/thumbnails"
+    _lock_empty_dir "$HOME/.thumbnails"
+    rm -rf -- "$HOME/.local/share/gvfs-metadata" 2>/dev/null || true
+
+    _clean_dbus_opened
+
+    if [[ -d "$HOME/.config/libreoffice" ]]; then
+        find "$HOME/.config/libreoffice" -type d \( -name backup -o -name sessions \) \
+            -exec find {} -mindepth 1 -delete \; 2>/dev/null || true
+        local xcu
+        while IFS= read -r xcu; do
+            [[ -n "$xcu" ]] || continue
+            if ! _libreoffice_strip_history "$xcu"; then
+                _extra_bump 1 "LibreOffice recent list could not be cleared"
+            fi
+        done < <(find "$HOME/.config/libreoffice" -name 'registrymodifications.xcu' -type f 2>/dev/null)
+    fi
+
+    rm -rf -- \
+        "$HOME/.config/evince" \
+        "$HOME/.local/share/evince" \
+        "$HOME/.cache/evince" \
+        "$HOME/.config/atril" \
+        "$HOME/.local/share/atril" \
+        "$HOME/.local/share/okular/docdata" \
+        "$HOME/.local/share/org.gnome.Papers" \
+        "$HOME/.config/xreader" \
+        "$HOME/.local/share/xreader" \
+        "$HOME/.local/share/qpdfview" \
+        2>/dev/null || true
+    if [[ -f "$HOME/.config/okularpartrc" ]]; then
+        sed -i '/^\[Recent /,/^\[/ { /^\[Recent /d; /^\[/!d; }' "$HOME/.config/okularpartrc" 2>/dev/null || true
+    fi
+    local office_dir
+    for office_dir in "$HOME/.config/onlyoffice" "$HOME/.local/share/Kingsoft"; do
+        [[ -d "$office_dir" ]] || continue
+        find "$office_dir" -type f \( -iname '*recent*' -o -iname '*history*' \) -delete 2>/dev/null || true
+        find "$office_dir" -type d -name backup -exec find {} -mindepth 1 -delete \; 2>/dev/null || true
+    done
+}
+
+# Files the session bus document portal and recent managers remember.
+# Listed and removed even while the portal is still connected.
+_dbus_opened_paths() {
+    local xbel="$HOME/.local/share/recently-used.xbel" line href desk
+    if [[ -f "$xbel" && ! -L "$xbel" ]]; then
+        while IFS= read -r href; do
+            [[ -n "$href" ]] && printf '%s\n' "$href"
+        done < <(grep -o 'href="[^"]*"' "$xbel" 2>/dev/null | sed 's/^href="//; s/"$//')
+    fi
+    if [[ -d "$HOME/.local/share/RecentDocuments" ]]; then
+        shopt -s nullglob
+        for desk in "$HOME/.local/share/RecentDocuments"/*.desktop; do
+            href=$(grep -m1 '^URL=' "$desk" 2>/dev/null | cut -d= -f2-)
+            [[ -n "$href" ]] && printf '%s\n' "$href"
+        done
+        shopt -u nullglob
+    fi
+    local docrt="/run/user/${UID}/doc" entry
+    if [[ -d "$docrt" ]]; then
+        while IFS= read -r entry; do
+            [[ -n "$entry" ]] && printf '%s\n' "$entry"
+        done < <(find "$docrt" -mindepth 2 -maxdepth 3 \( -type f -o -type l \) 2>/dev/null)
+    fi
+    if command -v gdbus >/dev/null 2>&1; then
+        line=$(gdbus call --session \
+            --dest org.freedesktop.portal.Documents \
+            --object-path /org/freedesktop/portal/documents \
+            --method org.freedesktop.portal.Documents.List 2>/dev/null || true)
+        if [[ -n "$line" ]]; then
+            while IFS= read -r href; do
+                [[ -n "$href" ]] && printf '%s\n' "$href"
+            done < <(printf '%s\n' "$line" | grep -oE 'file://[^[:space:]"'\'']+|/(home|mnt|media|run)/[^[:space:]"'\'',)]+')
+        fi
+    fi
+}
+
+_clean_dbus_opened() {
+    if [[ -d "$HOME/.local/share/RecentDocuments" ]]; then
+        find "$HOME/.local/share/RecentDocuments" -mindepth 1 -delete 2>/dev/null || true
+    fi
+    rm -f -- "$HOME/.local/share/flatpak/db/documents" \
+        "$HOME/.local/share/flatpak/db/documents-wal" \
+        "$HOME/.local/share/flatpak/db/documents-shm" 2>/dev/null || true
+    local docrt="/run/user/${UID}/doc"
+    if mountpoint -q "$docrt" 2>/dev/null; then
+        fusermount -u "$docrt" 2>/dev/null || umount "$docrt" 2>/dev/null || true
+    fi
+    systemctl --user restart xdg-document-portal.service >/dev/null 2>&1 || true
+    rm -rf -- "$HOME/.local/share/gvfs-metadata" 2>/dev/null || true
+}
+
+_check_dbus_opened() {
+    local padded path shown=0
+    padded=$(printf "%-22s" "dbus opened files")
+    local -A seen=()
+    while IFS= read -r path; do
+        [[ -n "$path" ]] || continue
+        [[ -n "${seen[$path]:-}" ]] && continue
+        seen[$path]=1
+        shown=1
+        echo -e "  ${RED}✘${RST}  ${padded} → ${YLW}${path}${RST}"
+        padded=$(printf "%-22s" "")
+    done < <(_dbus_opened_paths | awk 'NF && !seen[$0]++')
+    if [[ "$shown" -eq 0 ]]; then
+        echo -e "  ${GRN}✔${RST}  ${padded} → ${GRN}none${RST}"
+    fi
+}
+
+_check_document_viewers() {
+    local padded d label
+    local -a dirs=(
+        "$HOME/.config/evince|evince"
+        "$HOME/.local/share/atril|atril"
+        "$HOME/.local/share/okular/docdata|okular"
+        "$HOME/.config/libreoffice|libreoffice"
+        "$HOME/.local/share/org.gnome.Papers|papers"
+        "$HOME/.config/xreader|xreader"
+    )
+    local item found=0
+    for item in "${dirs[@]}"; do
+        d="${item%%|*}"
+        label="${item##*|}"
+        [[ -e "$d" ]] || continue
+        if [[ -d "$d" ]] && ! _dir_has_entries "$d"; then
+            continue
+        fi
+        found=1
+        padded=$(printf "%-22s" "$label")
+        echo -e "  ${RED}✘${RST}  ${padded} → ${YLW}local viewer data${RST}"
+    done
+    if [[ "$found" -eq 0 ]]; then
+        padded=$(printf "%-22s" "pdf/office viewers")
+        echo -e "  ${GRN}✔${RST}  ${padded} → ${GRN}no recent data${RST}"
+    fi
+}
+
+_check_telemetry() {
+    local padded unit state hit=0
+    for unit in whoopsie.service apport.service ubuntu-report.service; do
+        state=$(systemctl is-enabled "$unit" 2>/dev/null || true)
+        [[ "$state" == "enabled" ]] || continue
+        hit=1
+        padded=$(printf "%-22s" "$unit")
+        echo -e "  ${RED}✘${RST}  ${padded} → ${YLW}enabled${RST}"
+    done
+    if [[ -d "$HOME/.cache/ubuntu-report" ]] && _dir_has_entries "$HOME/.cache/ubuntu-report"; then
+        hit=1
+        padded=$(printf "%-22s" "ubuntu-report cache")
+        echo -e "  ${RED}✘${RST}  ${padded} → ${YLW}present${RST}"
+    fi
+    if [[ "$hit" -eq 0 ]]; then
+        padded=$(printf "%-22s" "telemetry reporters")
+        echo -e "  ${GRN}✔${RST}  ${padded} → ${GRN}not reporting${RST}"
+    fi
+}
+
+_documents_release() {
+    local d
+    for d in "$HOME/.cache/thumbnails" "$HOME/.thumbnails"; do
+        [[ -d "$d" ]] || continue
+        chattr -i "$d" 2>/dev/null || _gm_sudo chattr -i "$d" 2>/dev/null || true
+    done
+    if [[ -L "$HOME/.local/share/recently-used.xbel" ]]; then
+        rm -f -- "$HOME/.local/share/recently-used.xbel"
+    fi
+    local f
+    for f in "$HOME/.config/gtk-3.0/settings.ini" "$HOME/.config/gtk-4.0/settings.ini"; do
+        [[ -f "$f" ]] || continue
+        sed -i '/ghostmode-recent-off/d; /^gtk-recent-files-max-age=0$/d; /^gtk-recent-files-enabled=false$/d' "$f" 2>/dev/null || true
+    done
+}
+
+_clean_libreoffice() {
+    _documents_prevent
+}
+
 _clean_document_readers() {
-    rm -rf -- "$HOME/.local/share/okular/docdata" 2>/dev/null || true
-    rm -rf -- "$HOME/.local/share/atril" 2>/dev/null || true
-    _clean_named_subdirs "$HOME/.local/share/vlc" 
+    _clean_named_subdirs "$HOME/.local/share/vlc"
     if [[ -d "$HOME/.local/share/vlc" ]]; then
         find "$HOME/.local/share/vlc" -mindepth 1 -delete 2>/dev/null || true
     fi
@@ -235,6 +561,53 @@ _clean_document_readers() {
         [[ -d "$d" ]] || continue
         find "$d" -type f \( -iname '*history*' -o -iname '*recent*' \) -delete 2>/dev/null || true
     done
+}
+
+_telemetry_quiet() {
+    local unit state
+    for unit in whoopsie.service apport.service ubuntu-report.service ubuntu-report.timer; do
+        state=$(systemctl is-enabled "$unit" 2>/dev/null || true)
+        if [[ "$state" == "enabled" || "$state" == "static" ]]; then
+            _state_note_once "$HOME/.config/ghostmode/telemetry.state" "${unit}" "$state"
+            _gm_sudo systemctl disable --now "$unit" >/dev/null 2>&1 \
+                || _extra_bump 2 "could not disable ${unit}"
+        fi
+    done
+    if [[ -f /etc/popularity-contest.conf ]] && grep -q '^PARTICIPATE=yes' /etc/popularity-contest.conf 2>/dev/null; then
+        _state_note_once "$HOME/.config/ghostmode/telemetry.state" "popularity" "yes"
+        _gm_sudo sed -i 's/^PARTICIPATE=yes/PARTICIPATE=no/' /etc/popularity-contest.conf \
+            || _extra_bump 2 "could not turn popularity-contest off"
+    fi
+    rm -rf -- "$HOME/.cache/ubuntu-report" "$HOME/.local/share/ubuntu-report" 2>/dev/null || true
+    if [[ -d /var/lib/ubuntu-report ]]; then
+        _gm_sudo find /var/lib/ubuntu-report -type f -delete 2>/dev/null || true
+    fi
+    if [[ -d /var/lib/whoopsie ]]; then
+        _gm_sudo find /var/lib/whoopsie -type f -delete 2>/dev/null || true
+    fi
+}
+
+_telemetry_rotate_ids() {
+    _telemetry_quiet
+    _gm_sudo find /var/lib/ubuntu-report /var/lib/whoopsie -type f -delete 2>/dev/null || true
+}
+
+_telemetry_restore() {
+    local file="$HOME/.config/ghostmode/telemetry.state" line key val
+    [[ -f "$file" ]] || return 0
+    while IFS='=' read -r key val; do
+        [[ -n "$key" ]] || continue
+        case "$key" in
+            popularity)
+                [[ "$val" == "yes" && -f /etc/popularity-contest.conf ]] || continue
+                _gm_sudo sed -i 's/^PARTICIPATE=no/PARTICIPATE=yes/' /etc/popularity-contest.conf || true
+                ;;
+            *.service|*.timer)
+                [[ "$val" == "enabled" ]] || continue
+                _gm_sudo systemctl enable "$key" >/dev/null 2>&1 || true
+                ;;
+        esac
+    done < "$file"
 }
 
 _clean_torbrowser_profile() {
@@ -369,6 +742,7 @@ _extra_traces() {
     _clean_libreoffice
     _clean_document_readers
     _clean_messengers
+    _telemetry_quiet
     _clean_thunderbird
     _clean_docker_logs
     _clean_git_traces
