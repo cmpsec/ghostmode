@@ -31,33 +31,33 @@ _location_random() {
     _location_apply "$lat" "$lon"
 }
 
+_geoclue_set() {
+    local static_enable="$1" wifi_enable="$2"
+    local conf=/etc/geoclue/geoclue.conf
+    [[ -f "$conf" ]] || return 0
+    if ! _gm_sudo grep -q '\[static-source\]' "$conf"; then
+        printf '\n[static-source]\nenable=%s\n' "$static_enable" | _gm_sudo tee -a "$conf" >/dev/null
+    else
+        _gm_sudo sed -i "/\\[static-source\\]/,/^\\[/ s/^enable=.*/enable=${static_enable}/" "$conf"
+    fi
+    _gm_sudo sed -i "/\\[wifi\\]/,/^\\[/ s/^enable=.*/enable=${wifi_enable}/" "$conf"
+}
+
 _location_apply() {
     local lat="$1" lon="$2"
     printf "%s\n%s\n%s\n%s\n" "$lat" "$lon" "0.0" "10.0" > /tmp/ghostmode-geolocation
-    echo CHANGEME_PASSWORD | sudo -S mv /tmp/ghostmode-geolocation /etc/geolocation
-    echo CHANGEME_PASSWORD | sudo -S chmod 644 /etc/geolocation
-    echo CHANGEME_PASSWORD | sudo -S bash -c '
-        CONF=/etc/geoclue/geoclue.conf
-        if ! grep -q "\[static-source\]" "$CONF" 2>/dev/null; then
-            printf "\n[static-source]\nenable=true\n" >> "$CONF"
-        else
-            sed -i "/\[static-source\]/,/^\[/ s/^enable=.*/enable=true/" "$CONF"
-        fi
-        sed -i "/\[wifi\]/,/^\[/ s/^enable=.*/enable=false/" "$CONF" 2>/dev/null
-    ' 2>/dev/null
-    echo CHANGEME_PASSWORD | sudo -S systemctl restart geoclue 2>/dev/null
+    _gm_sudo mv /tmp/ghostmode-geolocation /etc/geolocation
+    _gm_sudo chmod 644 /etc/geolocation
+    _geoclue_set true false
+    _gm_sudo systemctl restart geoclue 2>/dev/null || true
     echo -e "  ${GRN}${BLD}[+] Fake location set: ${lat}, ${lon}${RST}"
     echo -e "  ${GRY}All apps using system location services will now see this instead of the real one.${RST}"
 }
 
 _location_off() {
-    echo CHANGEME_PASSWORD | sudo -S rm -f /etc/geolocation
-    echo CHANGEME_PASSWORD | sudo -S bash -c '
-        CONF=/etc/geoclue/geoclue.conf
-        sed -i "/\[static-source\]/,/^\[/ s/^enable=.*/enable=false/" "$CONF" 2>/dev/null
-        sed -i "/\[wifi\]/,/^\[/ s/^enable=.*/enable=true/" "$CONF" 2>/dev/null
-    ' 2>/dev/null
-    echo CHANGEME_PASSWORD | sudo -S systemctl restart geoclue 2>/dev/null
+    _gm_sudo rm -f /etc/geolocation
+    _geoclue_set false true
+    _gm_sudo systemctl restart geoclue 2>/dev/null || true
     echo -e "  ${RED}[-] Real location restored.${RST}"
 }
 

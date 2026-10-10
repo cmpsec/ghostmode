@@ -15,7 +15,6 @@ _check_file() {
         lines=$(wc -l < "$path" 2>/dev/null)
         size=$(du -sh "$path" 2>/dev/null | cut -f1)
         echo -e "  ${RED}✘${RST}  ${padded} → ${YLW}${lines} lines${RST} (${size})"
-        head -5 "$path" 2>/dev/null | sed 's/^/       ╰ /'
     fi
 }
 
@@ -158,8 +157,6 @@ _check_recently_used() {
         local items
         items=$(grep -c '<bookmark' "$path" 2>/dev/null)
         echo -e "  ${RED}✘${RST}  ${padded} → ${YLW}${items} recent items${RST}"
-        grep -o 'href="[^"]*"' "$path" 2>/dev/null | head -5 | \
-            sed 's/href=//;s/"//g;s/^/       ╰ /'
     fi
     padded=$(printf "%-22s" "recently-used.xbel.*")
     local xbel_extra
@@ -201,33 +198,21 @@ _check_cursor_cache() {
 }
 
 _check_cursor_projects() {
-    local path=~/.cursor/projects
+    local path="$HOME/.cursor/projects"
     local padded
     padded=$(printf "%-22s" "cursor/projects")
     if [[ ! -d "$path" ]]; then
         echo -e "  ${GRN}✔${RST}  ${padded} → ${GRN}not found (clean)${RST}"
         return
     fi
-    local dirty=0
-    local -a dirty_items=()
-    while IFS= read -r f; do
-        dirty=$(( dirty + 1 ))
-        dirty_items+=("$(basename "$(dirname "$f")")/$(basename "$f")")
-    done < <(find "$path" -mindepth 3 -maxdepth 4 \
-        \( -name "agent-transcripts" -o -name "terminals" \) \
-        -type d 2>/dev/null | while read -r d; do
-            find "$d" -maxdepth 1 -type f 2>/dev/null
-        done)
-    if [[ "$dirty" -eq 0 ]]; then
-        local sess_count
-        sess_count=$(find "$path" -maxdepth 1 -mindepth 1 -type d 2>/dev/null | wc -l)
-        sess_count=$(( sess_count + 0 ))
-        echo -e "  ${GRN}✔${RST}  ${padded} → ${GRN}clean${RST} (${sess_count} active sessions)"
+    local count size
+    count=$(find "$path" -mindepth 1 2>/dev/null | wc -l)
+    count=$((count + 0))
+    size=$(du -sh "$path" 2>/dev/null | cut -f1)
+    if [[ "$count" -eq 0 ]]; then
+        echo -e "  ${GRN}✔${RST}  ${padded} → ${GRN}empty${RST}"
     else
-        local size
-        size=$(du -sh "$path" 2>/dev/null | cut -f1)
-        echo -e "  ${RED}✘${RST}  ${padded} → ${YLW}${dirty} trace files${RST} (${size})"
-        printf '       ╰ %s\n' "${dirty_items[@]:0:5}"
+        echo -e "  ${RED}✘${RST}  ${padded} → ${YLW}${count} items${RST} (${size})"
     fi
 }
 
@@ -259,20 +244,14 @@ _check_cursor_ai() {
         echo -e "  ${GRN}✔${RST}  ${padded} → ${GRN}not found (clean)${RST}"
         return
     fi
-    local db="$path/ai-code-tracking.db"
-    if [[ ! -f "$db" ]]; then
+    local count size
+    count=$(find "$path" -mindepth 1 -type f -size +0c 2>/dev/null | wc -l)
+    count=$((count + 0))
+    if [[ "$count" -eq 0 ]]; then
         echo -e "  ${GRN}✔${RST}  ${padded} → ${GRN}empty${RST}"
-        return
-    fi
-    local rows=0
-    rows=$(sqlite3 "$db" "SELECT COUNT(*) FROM code_tracking;" 2>/dev/null || echo "0")
-    rows=$(( rows + 0 ))
-    if [[ "$rows" -eq 0 ]]; then
-        echo -e "  ${GRN}✔${RST}  ${padded} → ${GRN}clean${RST} (db empty)"
     else
-        local size
-        size=$(du -sh "$db" 2>/dev/null | cut -f1)
-        echo -e "  ${RED}✘${RST}  ${padded} → ${YLW}${rows} tracked entries${RST} (${size})"
+        size=$(du -sh "$path" 2>/dev/null | cut -f1)
+        echo -e "  ${RED}✘${RST}  ${padded} → ${YLW}${count} files${RST} (${size})"
     fi
 }
 
@@ -349,9 +328,7 @@ _check_clipboard() {
     if [[ -z "$clip_content" ]]; then
         echo -e "  ${GRN}✔${RST}  ${padded} → ${GRN}empty${RST}"
     else
-        local first_line
-        first_line=$(echo "$clip_content" | head -1 | cut -c1-60)
-        echo -e "  ${RED}✘${RST}  ${padded} → ${YLW}has content${RST}: \"${GRY}${first_line}${RST}\""
+        echo -e "  ${RED}✘${RST}  ${padded} → ${YLW}has content${RST}"
     fi
     padded=$(printf "%-22s" "clipboard (primary)")
     local prim_content
@@ -359,19 +336,16 @@ _check_clipboard() {
     if [[ -z "$prim_content" ]]; then
         echo -e "  ${GRN}✔${RST}  ${padded} → ${GRN}empty${RST}"
     else
-        local first_line
-        first_line=$(echo "$prim_content" | head -1 | cut -c1-60)
-        echo -e "  ${RED}✘${RST}  ${padded} → ${YLW}has content${RST}: \"${GRY}${first_line}${RST}\""
+        echo -e "  ${RED}✘${RST}  ${padded} → ${YLW}has content${RST}"
     fi
     padded=$(printf "%-22s" "clipman/history file")
     local clipman_file=~/.cache/xfce4/clipman/textsrc
     if [[ ! -f "$clipman_file" || ! -s "$clipman_file" ]]; then
         echo -e "  ${GRN}✔${RST}  ${padded} → ${GRN}empty${RST}"
     else
-        local first_entry sz
-        first_entry=$(head -1 "$clipman_file" 2>/dev/null | cut -c1-60)
+        local sz
         sz=$(du -sh "$clipman_file" 2>/dev/null | cut -f1)
-        echo -e "  ${RED}✘${RST}  ${padded} → ${YLW}has entries${RST} (${sz}): \"${GRY}${first_entry}${RST}\""
+        echo -e "  ${RED}✘${RST}  ${padded} → ${YLW}has entries${RST} (${sz})"
     fi
 }
 
@@ -603,31 +577,31 @@ _check_service_logs() {
     padded=$(printf "%-22s" "apache2 access.log")
     if [[ ! -f /var/log/apache2/access.log ]]; then
         echo -e "  ${GRN}✔${RST}  ${padded} → ${GRN}not found${RST}"
-    elif ! echo CHANGEME_PASSWORD | sudo -S test -s /var/log/apache2/access.log 2>/dev/null; then
+    elif ! _gm_sudo test -s /var/log/apache2/access.log 2>/dev/null; then
         echo -e "  ${GRN}✔${RST}  ${padded} → ${GRN}empty${RST}"
     else
         local sz
-        sz=$(echo CHANGEME_PASSWORD | sudo -S du -sh /var/log/apache2/access.log 2>/dev/null | cut -f1)
+        sz=$(_gm_sudo du -sh /var/log/apache2/access.log 2>/dev/null | cut -f1)
         echo -e "  ${RED}✘${RST}  ${padded} → ${YLW}has content${RST} (${sz})"
     fi
     padded=$(printf "%-22s" "nginx access.log")
     if [[ ! -f /var/log/nginx/access.log ]]; then
         echo -e "  ${GRN}✔${RST}  ${padded} → ${GRN}not found${RST}"
-    elif ! echo CHANGEME_PASSWORD | sudo -S test -s /var/log/nginx/access.log 2>/dev/null; then
+    elif ! _gm_sudo test -s /var/log/nginx/access.log 2>/dev/null; then
         echo -e "  ${GRN}✔${RST}  ${padded} → ${GRN}empty${RST}"
     else
         local sz
-        sz=$(echo CHANGEME_PASSWORD | sudo -S du -sh /var/log/nginx/access.log 2>/dev/null | cut -f1)
+        sz=$(_gm_sudo du -sh /var/log/nginx/access.log 2>/dev/null | cut -f1)
         echo -e "  ${RED}✘${RST}  ${padded} → ${YLW}has content${RST} (${sz})"
     fi
     padded=$(printf "%-22s" "macchanger.log")
     if [[ ! -f /var/log/macchanger.log ]]; then
         echo -e "  ${GRN}✔${RST}  ${padded} → ${GRN}not found${RST}"
-    elif ! echo CHANGEME_PASSWORD | sudo -S grep -qv "disabled" /var/log/macchanger.log 2>/dev/null; then
+    elif ! _gm_sudo grep -qv "disabled" /var/log/macchanger.log 2>/dev/null; then
         echo -e "  ${GRN}✔${RST}  ${padded} → ${GRN}only disabled entries${RST}"
     else
         local sz
-        sz=$(echo CHANGEME_PASSWORD | sudo -S du -sh /var/log/macchanger.log 2>/dev/null | cut -f1)
+        sz=$(_gm_sudo du -sh /var/log/macchanger.log 2>/dev/null | cut -f1)
         echo -e "  ${RED}✘${RST}  ${padded} → ${YLW}has entries${RST} (${sz})"
     fi
 }
@@ -637,13 +611,13 @@ _check_network_manager() {
     padded=$(printf "%-22s" "WiFi SSIDs saved")
     local nm_dir=/etc/NetworkManager/system-connections
     local count=0
-    count=$(echo CHANGEME_PASSWORD | sudo -S ls "$nm_dir" 2>/dev/null | wc -l)
+    count=$(_gm_sudo ls "$nm_dir" 2>/dev/null | wc -l)
     count=$(( count + 0 ))
     if [[ "$count" -eq 0 ]]; then
         echo -e "  ${GRN}✔${RST}  ${padded} → ${GRN}none saved${RST}"
     else
         echo -e "  ${YLW}!${RST}  ${padded} → ${YLW}${count} WiFi profiles${RST}"
-        echo CHANGEME_PASSWORD | sudo -S ls "$nm_dir" 2>/dev/null | \
+        _gm_sudo ls "$nm_dir" 2>/dev/null | \
             sed 's/.nmconnection//' | head -5 | sed 's/^/       ╰ /'
     fi
 }
@@ -778,7 +752,7 @@ _check_crash_dumps() {
     local padded
     padded=$(printf "%-22s" "crash dumps")
     local sys_count=0 user_count=0
-    sys_count=$(echo CHANGEME_PASSWORD | sudo -S find /var/crash -maxdepth 1 -type f 2>/dev/null | wc -l)
+    sys_count=$(_gm_sudo find /var/crash -maxdepth 1 -type f 2>/dev/null | wc -l)
     sys_count=$(( sys_count + 0 ))
     user_count=$(find ~/.cache/apport -maxdepth 1 -type f 2>/dev/null | wc -l)
     user_count=$(( user_count + 0 ))
@@ -787,7 +761,7 @@ _check_crash_dumps() {
         echo -e "  ${GRN}✔${RST}  ${padded} → ${GRN}clean${RST}"
     else
         local sz
-        sz=$(echo CHANGEME_PASSWORD | sudo -S du -sh /var/crash 2>/dev/null | cut -f1)
+        sz=$(_gm_sudo du -sh /var/crash 2>/dev/null | cut -f1)
         echo -e "  ${RED}✘${RST}  ${padded} → ${YLW}${total} files, may hold memory dumps${RST} (${sz:-?})"
     fi
 }
@@ -824,7 +798,7 @@ _check_apt_logs() {
     local padded
     padded=$(printf "%-22s" "apt history logs")
     local -a logs=()
-    mapfile -t logs < <(echo CHANGEME_PASSWORD | sudo -S find /var/log/apt -maxdepth 1 -type f \
+    mapfile -t logs < <(_gm_sudo find /var/log/apt -maxdepth 1 -type f \
         \( -name "history.log*" -o -name "term.log*" \) 2>/dev/null)
     local nonempty=0
     for f in "${logs[@]}"; do
@@ -897,7 +871,7 @@ _check_pentest_traces() {
 
     padded=$(printf "%-22s" "responder logs")
     local resp_count=0
-    resp_count=$(echo CHANGEME_PASSWORD | sudo -S find /usr/share/responder/logs -maxdepth 1 -type f 2>/dev/null | wc -l)
+    resp_count=$(_gm_sudo find /usr/share/responder/logs -maxdepth 1 -type f 2>/dev/null | wc -l)
     resp_count=$(( resp_count + 0 ))
     if [[ "$resp_count" -eq 0 ]]; then
         echo -e "  ${GRN}✔${RST}  ${padded} → ${GRN}not found (clean)${RST}"
@@ -1089,23 +1063,7 @@ _check_battery() {
 }
 
 _check_zsh_autosuggest() {
-    local padded
-    padded=$(printf "%-22s" "zsh autosuggestions")
-    # We check for the source file itself instead of editing/reading .zshrc —
-    # safer, and independent of the if/then/fi structure used in the user file
-    local -a as_paths=(
-        /usr/share/zsh-autosuggestions/zsh-autosuggestions.zsh
-        /usr/share/zsh-autosuggestions/zsh-autosuggestions.plugin.zsh
-    )
-    local f active=0
-    for f in "${as_paths[@]}"; do
-        [[ -f "$f" ]] && active=1
-    done
-    if [[ "$active" -eq 1 ]]; then
-        echo -e "  ${RED}✘${RST}  ${padded} → ${YLW}enabled (shows your previous commands as you type)${RST}"
-    else
-        echo -e "  ${GRN}✔${RST}  ${padded} → ${GRN}disabled${RST}"
-    fi
+    _history_check
 }
 
 _check_custom_paths() {

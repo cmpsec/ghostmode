@@ -15,6 +15,6 @@ MemoryMax=200M
 ExecStartPre=/bin/sleep 30
 # ------------------------------------
 ExecStart=%h/.local/bin/ghostmode auto
-StandardOutput=journal
+StandardOutput=null
 StandardError=journal
 RemainAfterExit=no

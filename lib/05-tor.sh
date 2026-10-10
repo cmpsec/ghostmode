@@ -19,13 +19,13 @@ _tor_on() {
     echo -e "${BLD}${CYN}[ Enabling Tor for all device connections ]${RST}"
     if ! command -v anonsurf >/dev/null 2>&1; then
         echo "  anonsurf is not installed — installing from source now (no official apt package exists)..."
-        echo CHANGEME_PASSWORD | sudo -S apt-get update -qq 2>/dev/null
-        echo CHANGEME_PASSWORD | sudo -S apt-get install -y git fakeroot 2>/dev/null
+        _gm_sudo apt-get update -qq 2>/dev/null
+        _gm_sudo apt-get install -y git fakeroot 2>/dev/null
         local build_dir
         build_dir=$(mktemp -d)
         if git clone --depth 1 https://github.com/Und3rf10w/kali-anonsurf.git "$build_dir/kali-anonsurf" 2>/dev/null; then
             (cd "$build_dir/kali-anonsurf" && chmod +x installer.sh \
-                && echo CHANGEME_PASSWORD | sudo -S ./installer.sh) 2>/dev/null
+                && _gm_sudo run-script "$build_dir/kali-anonsurf/installer.sh") 2>/dev/null || true
         fi
         rm -rf "$build_dir"
     fi
@@ -35,7 +35,7 @@ _tor_on() {
         echo -e "       cd kali-anonsurf && sudo ./installer.sh"
         return 1
     fi
-    echo CHANGEME_PASSWORD | sudo -S anonsurf start
+    _gm_sudo anonsurf start
     mkdir -p "$(dirname "$GHOSTMODE_TOR_STATE_FILE")"
     echo "on" > "$GHOSTMODE_TOR_STATE_FILE"
 
@@ -52,19 +52,19 @@ _tor_on() {
         # actually owns to keep its own private copy of the browser, since
         # it can't traverse into the regular user's home directory at all
         # (Debian/Kali home dirs block other users by default).
-        echo CHANGEME_PASSWORD | sudo -S useradd -r -m -d /home/torbrowser -s /usr/sbin/nologin torbrowser 2>/dev/null
+        _gm_sudo useradd -r -m -d /home/torbrowser -s /usr/sbin/nologin torbrowser 2>/dev/null
     elif [[ ! -d /home/torbrowser ]]; then
         # Repairs a 'torbrowser' user left over from an older version of
         # this script, which was created without a home directory (-M).
-        echo CHANGEME_PASSWORD | sudo -S mkdir -p /home/torbrowser 2>/dev/null
-        echo CHANGEME_PASSWORD | sudo -S chown torbrowser:torbrowser /home/torbrowser 2>/dev/null
-        echo CHANGEME_PASSWORD | sudo -S usermod -d /home/torbrowser torbrowser 2>/dev/null
+        _gm_sudo mkdir -p /home/torbrowser 2>/dev/null
+        _gm_sudo chown torbrowser:torbrowser /home/torbrowser 2>/dev/null
+        _gm_sudo usermod -d /home/torbrowser torbrowser 2>/dev/null
     fi
     local tb_uid
     tb_uid=$(id -u torbrowser 2>/dev/null)
     if [[ -n "$tb_uid" ]]; then
-        echo CHANGEME_PASSWORD | sudo -S iptables -t nat -I OUTPUT 1 -m owner --uid-owner "$tb_uid" -j RETURN 2>/dev/null
-        echo CHANGEME_PASSWORD | sudo -S iptables -I OUTPUT 1 -m owner --uid-owner "$tb_uid" -j ACCEPT 2>/dev/null
+        _gm_sudo iptables -t nat -I OUTPUT 1 -m owner --uid-owner "$tb_uid" -j RETURN 2>/dev/null
+        _gm_sudo iptables -I OUTPUT 1 -m owner --uid-owner "$tb_uid" -j ACCEPT 2>/dev/null
     fi
 
     # Persistence after reboot: a SYSTEM-level service (not user/lingering)
@@ -98,10 +98,10 @@ RemainAfterExit=yes
 [Install]
 WantedBy=multi-user.target
 UNIT
-    echo CHANGEME_PASSWORD | sudo -S mv /tmp/ghostmode-tor-boot.service "$GHOSTMODE_TOR_UNIT"
-    echo CHANGEME_PASSWORD | sudo -S chown root:root "$GHOSTMODE_TOR_UNIT"
-    echo CHANGEME_PASSWORD | sudo -S systemctl daemon-reload
-    echo CHANGEME_PASSWORD | sudo -S systemctl enable ghostmode-tor-boot.service 2>/dev/null
+    _gm_sudo mv /tmp/ghostmode-tor-boot.service "$GHOSTMODE_TOR_UNIT"
+    _gm_sudo chown root:root "$GHOSTMODE_TOR_UNIT"
+    _gm_sudo systemctl daemon-reload
+    _gm_sudo systemctl enable ghostmode-tor-boot.service 2>/dev/null
 
     # Clean up the older --user unit from a previous version, if present
     if [[ -f "$GHOSTMODE_TOR_LEGACY_USER_UNIT" ]]; then
@@ -110,6 +110,7 @@ UNIT
         systemctl --user daemon-reload 2>/dev/null
     fi
 
+    _shield_on || echo -e "  ${RED}✘${RST}  Tor is up, but the shield did not engage."
     echo -e "  ${GRN}${BLD}[+] Tor is now active for all device connections and browsers.${RST}"
     echo -e "  ${GRN}It will stay active automatically even after rebooting the laptop.${RST}"
 }
@@ -121,24 +122,25 @@ _tor_off() {
         echo -e "  ${YLW}Internet will stay CUT after Tor stops, until you also run:${RST} ${BLD}ghostmode killswitch off${RST}"
     fi
     if command -v anonsurf >/dev/null 2>&1; then
-        echo CHANGEME_PASSWORD | sudo -S anonsurf stop
+        _gm_sudo anonsurf stop
     fi
     mkdir -p "$(dirname "$GHOSTMODE_TOR_STATE_FILE")"
     echo "off" > "$GHOSTMODE_TOR_STATE_FILE"
-    echo CHANGEME_PASSWORD | sudo -S systemctl disable --now ghostmode-tor-boot.service 2>/dev/null
-    echo CHANGEME_PASSWORD | sudo -S rm -f "$GHOSTMODE_TOR_UNIT"
-    echo CHANGEME_PASSWORD | sudo -S systemctl daemon-reload
+    _gm_sudo systemctl disable --now ghostmode-tor-boot.service 2>/dev/null
+    _gm_sudo rm -f "$GHOSTMODE_TOR_UNIT"
+    _gm_sudo systemctl daemon-reload
     # Clean up any leftover units from older versions of this script
     if [[ -f "$GHOSTMODE_TOR_LEGACY_UNIT" ]]; then
-        echo CHANGEME_PASSWORD | sudo -S systemctl disable --now ghostmode-tor.service 2>/dev/null
-        echo CHANGEME_PASSWORD | sudo -S rm -f "$GHOSTMODE_TOR_LEGACY_UNIT" 2>/dev/null
-        echo CHANGEME_PASSWORD | sudo -S systemctl daemon-reload 2>/dev/null
+        _gm_sudo systemctl disable --now ghostmode-tor.service 2>/dev/null
+        _gm_sudo rm -f "$GHOSTMODE_TOR_LEGACY_UNIT" 2>/dev/null
+        _gm_sudo systemctl daemon-reload 2>/dev/null
     fi
     if [[ -f "$GHOSTMODE_TOR_LEGACY_USER_UNIT" ]]; then
         systemctl --user disable --now ghostmode-tor-boot.service 2>/dev/null
         rm -f "$GHOSTMODE_TOR_LEGACY_USER_UNIT"
         systemctl --user daemon-reload 2>/dev/null
     fi
+    _shield_off || true
     echo -e "  ${RED}[-] Tor is now stopped.${RST}"
 }
 
@@ -166,7 +168,7 @@ _tor_status() {
     fi
     if command -v anonsurf >/dev/null 2>&1; then
         echo ""
-        echo CHANGEME_PASSWORD | sudo -S anonsurf status 2>/dev/null
+        _gm_sudo anonsurf status 2>/dev/null
     fi
 }
 

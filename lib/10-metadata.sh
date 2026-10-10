@@ -21,9 +21,9 @@ cmd_metadata() {
 
 _metadata_ensure_tools() {
     command -v exiftool >/dev/null 2>&1 || \
-        echo CHANGEME_PASSWORD | sudo -S apt-get install -y libimage-exiftool-perl 2>/dev/null
+        _gm_sudo apt-get install -y libimage-exiftool-perl 2>/dev/null
     command -v ffmpeg >/dev/null 2>&1 || \
-        echo CHANGEME_PASSWORD | sudo -S apt-get install -y ffmpeg 2>/dev/null
+        _gm_sudo apt-get install -y ffmpeg 2>/dev/null
 }
 
 _metadata_photo() {

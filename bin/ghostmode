@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Ghost Mode V2.0 — entry point. Sources every module under lib/ and
+# Ghost Mode V3.0 — entry point. Sources every module under lib/ and
 # dispatches to the requested command. See lib/*.sh for the actual logic —
 # this file only wires things together.
 
@@ -29,10 +29,14 @@ cmd_help() {
     echo -e "  ${GRY}v${GHOSTMODE_VERSION}${RST}"
     echo ""
     echo -e "${BLD}Core commands:${RST}"
-    echo -e "  ${GRN}ghostmode${RST}                    Full manual cleanup of all traces"
-    echo -e "  ${GRN}ghostmode status${RST}             Show the full status report (no deletion)"
-    echo -e "  ${GRN}ghostmode delete${RST}             Same full cleanup as above"
-    echo -e "  ${GRN}ghostmode auto${RST}               Called automatically by the systemd timer every hour"
+    echo -e "  ${GRN}ghostmode${RST}                    Full cleanup of traces this tool can reach"
+    echo -e "  ${GRN}ghostmode --force${RST}            Same cleanup, after closing this user's Cursor"
+    echo -e "  ${GRN}ghostmode status${RST}             Report only. Nothing is deleted"
+    echo -e "  ${GRN}ghostmode verify${RST}             Re-check Cursor stores and shell history"
+    echo -e "  ${GRN}ghostmode delete${RST}             Same full cleanup, including saved networks except the active one"
+    echo -e "  ${GRN}ghostmode delete --force${RST}     Delete, after closing this user's Cursor"
+    echo -e "  ${GRN}ghostmode auto${RST}               Timer run. Skips live Cursor databases. Does not change the firewall"
+    echo -e "  ${GRN}ghostmode timer [15min|2h|1d]${RST}  Set how often auto runs"
     echo ""
     echo -e "${BLD}Connections and network:${RST}"
     echo -e "  ${GRN}ghostmode connections${RST}        Show incoming/outgoing connections + public IP/country"
@@ -43,6 +47,7 @@ cmd_help() {
     echo -e "  ${GRN}ghostmode tor on${RST}             Enable Tor for all device connections (persists after reboot)"
     echo -e "  ${GRN}ghostmode tor off${RST}            Disable Tor"
     echo -e "  ${GRN}ghostmode tor status${RST}         Show current Tor status"
+    echo -e "  ${GRN}ghostmode shield on|off|status${RST}  Extra fail-closed checks while Tor is up"
     echo -e "  ${GRN}ghostmode torbrowser [path]${RST}  Launch Tor Browser exempted from anonsurf's tunnel"
     echo ""
     echo -e "${BLD}Kill switch (only active while Tor is ON):${RST}"
@@ -56,7 +61,8 @@ cmd_help() {
     echo -e "  ${GRN}ghostmode location off${RST}               Restore the real location"
     echo ""
     echo -e "${BLD}Fingerprint rotation (MAC + hostname):${RST}"
-    echo -e "  ${GRN}ghostmode fingerprint rotate${RST}    Rotate once, right now"
+    echo -e "  ${GRN}ghostmode fingerprint rotate${RST}    Rotate MAC and hostname once"
+    echo -e "  ${GRN}ghostmode fingerprint rotate --machine-id${RST}  Also regenerate machine-id (reboot)"
     echo -e "  ${GRN}ghostmode fingerprint auto on${RST}   Rotate automatically every boot"
     echo -e "  ${GRN}ghostmode fingerprint auto off${RST}  Stop automatic rotation"
     echo ""
@@ -76,15 +82,40 @@ cmd_help() {
     echo ""
     echo -e "  ${RED}ghostmode destroy${RST}            Fully remove Ghost Mode from this system (irreversible)"
     echo ""
-    echo -e "  ${GRY}Ghost Mode keeps no logs of its own operations, by design.${RST}"
+    echo -e "  ${GRY}The sudo password is saved once at install (~/.config/ghostmode/sudo.pass) and reused automatically.${RST}"
+    echo -e "  ${GRY}No log is kept of what was cleared. Green is not a claim that the disk, router, or cloud is clean.${RST}"
+    echo -e "  ${GRY}Closing Cursor's state database logs you out of Cursor. Shell suggestions return only after destroy, and only after history is emptied.${RST}"
     echo ""
 }
 
 
 case "${1:-}" in
     status)       cmd_status ;;
+    verify)       cmd_verify ;;
     auto)         cmd_clean "auto" ;;
-    delete)       cmd_delete ;;
+    delete)
+        if [[ "${2:-}" == "--force" ]]; then
+            # Used by lib/15-cursor.sh in this same shell.
+            # shellcheck disable=SC2034
+            GHOSTMODE_FORCE=1
+        elif [[ -n "${2:-}" ]]; then
+            echo "Usage: ghostmode delete [--force]"
+            exit 1
+        fi
+        cmd_delete
+        ;;
+    --force)
+        if [[ -n "${2:-}" ]]; then
+            echo "Usage: ghostmode --force"
+            exit 1
+        fi
+        # Used by lib/15-cursor.sh in this same shell.
+        # shellcheck disable=SC2034
+        GHOSTMODE_FORCE=1
+        cmd_clean
+        ;;
+    shield)       shift; cmd_shield "$@" ;;
+    timer)        shift; cmd_timer "$@" ;;
     connections)  shift; cmd_connections "$@" ;;
     tor)          shift; cmd_tor "$@" ;;
     killswitch)   shift; cmd_killswitch "$@" ;;
@@ -98,7 +129,7 @@ case "${1:-}" in
     help|-h|h|--help) cmd_help ;;
     "")           cmd_clean ;;
     *)
-        echo "Usage: ghostmode [status|delete|auto|connections|tor|torbrowser|killswitch|location|fingerprint|metadata|paths|security|destroy|help]"
+        echo "Usage: ghostmode [status|verify|delete|auto|timer|connections|tor|shield|torbrowser|killswitch|location|fingerprint|metadata|paths|security|destroy|help]"
         exit 1
         ;;
 esac

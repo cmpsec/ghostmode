@@ -42,7 +42,7 @@ cmd_torbrowser() {
     # "Tor Browser is already running, but is not responding" and an
     # apparent hang on the next launch attempt — so each invocation starts
     # from a guaranteed-clean slate instead of trying to detect staleness.
-    echo CHANGEME_PASSWORD | sudo -S pkill -9 -u torbrowser 2>/dev/null
+    _gm_sudo pkill -9 -u torbrowser 2>/dev/null
     sleep 1
 
     # torbrowser (a separate system user) can't read into your home
@@ -59,9 +59,9 @@ cmd_torbrowser() {
     if [[ ! -x "${dest_root}/Browser/start-tor-browser" ]] \
        || [[ "$tb_path" -nt "${dest_root}/Browser/start-tor-browser" ]]; then
         echo -e "  ${GRY}Copying the Tor Browser bundle to the exempted user's own directory (first run, or an update was found)...${RST}"
-        echo CHANGEME_PASSWORD | sudo -S rm -rf "$dest_root" 2>/dev/null
-        echo CHANGEME_PASSWORD | sudo -S cp -a "$bundle_root" "$dest_root" 2>/dev/null
-        echo CHANGEME_PASSWORD | sudo -S chown -R torbrowser:torbrowser "$dest_root" 2>/dev/null
+        _gm_sudo rm -rf "$dest_root" 2>/dev/null
+        _gm_sudo cp -a "$bundle_root" "$dest_root" 2>/dev/null
+        _gm_sudo chown -R torbrowser:torbrowser "$dest_root" 2>/dev/null
     fi
 
     # kill -9 doesn't give the browser a chance to clean up its own lock
@@ -75,7 +75,7 @@ cmd_torbrowser() {
     command -v xhost >/dev/null 2>&1 && xhost +SI:localuser:torbrowser >/dev/null 2>&1
 
     echo -e "  ${GRN}${BLD}[+] Launching Tor Browser as the exempted user...${RST}"
-    echo CHANGEME_PASSWORD | sudo -S -u torbrowser env HOME="$tb_home" DISPLAY="$DISPLAY" \
+    _gm_sudo runuser -u torbrowser -- env HOME="$tb_home" DISPLAY="$DISPLAY" \
         "${dest_root}/Browser/start-tor-browser" &
 }
 

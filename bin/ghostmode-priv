@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+# Privileged helper for Ghost Mode. sudoers allows this path only.
+# The first argument must be a bare command name from the list below.
+# This replaces the old design that wrote a sudo password into installed files.
+set -euo pipefail
+
+if [[ $# -lt 1 ]]; then
+    echo "ghostmode-priv: missing command" >&2
+    exit 1
+fi
+
+name="$1"
+shift
+
+if [[ "$name" == "run-script" ]]; then
+    script="${1:-}"
+    shift || true
+    case "$script" in
+        /tmp/*/kali-anonsurf/installer.sh | /var/tmp/*/kali-anonsurf/installer.sh)
+            [[ -f "$script" ]] || exit 1
+            exec "$script" "$@"
+            ;;
+    esac
+    echo "ghostmode-priv: refused" >&2
+    exit 1
+fi
+
+if [[ "$name" == */* || "$name" == .* ]]; then
+    echo "ghostmode-priv: refused" >&2
+    exit 1
+fi
+
+case "$name" in
+    truncate | journalctl | swapoff | swapon | find | systemctl | iptables | ip6tables | \
+        sysctl | ip | hostnamectl | nmcli | chattr | resolvectl | systemd-resolve | \
+        updatedb | anonsurf | useradd | userdel | usermod | mkdir | chown | chmod | \
+        mv | rm | pkill | kill | openvpn | wg-quick | loginctl | apt-get | sed | \
+        tee | grep | install | systemd-machine-id-setup | dbus-uuidgen | ss | du | \
+        ls | test | wc | cp | runuser)
+        ;;
+    *)
+        echo "ghostmode-priv: refused" >&2
+        exit 1
+        ;;
+esac
+
+bin=$(command -v "$name") || {
+    echo "ghostmode-priv: not found: $name" >&2
+    exit 1
+}
+exec "$bin" "$@"

@@ -46,7 +46,9 @@ if [[ "$UPGRADE" -eq 1 ]]; then
 else
     echo "  • Script will be copied to: ~/.local/bin/ghostmode (customized for this machine)"
 fi
-echo "  • systemd timer: hourly, low priority (no noticeable battery/CPU impact)"
+echo "  • systemd timer: low priority, interval chosen below (default 1 hour)"
+echo "  • sudo password: saved once in ~/.config/ghostmode/sudo.pass (mode 600)"
+echo "    so the timer and later commands do not ask for it again"
 echo "  • lingering: enabled so the timer runs even without an open session"
 echo ""
 read -rp "Proceed? (y/n): " CONFIRM
@@ -55,7 +57,6 @@ read -rp "Proceed? (y/n): " CONFIRM
 PACK_DIR="$(dirname "$(realpath "$0")")"
 BIN_SRC="$PACK_DIR/bin/ghostmode"
 LIB_SRC="$PACK_DIR/lib"
-SYSD_DIR="$PACK_DIR/systemd"
 DEST_LIB="$HOME/.local/share/ghostmode/lib"
 
 [[ -f "$BIN_SRC" ]] || fail "bin/ghostmode not found — make sure you're running this from inside the project folder"
@@ -78,30 +79,43 @@ else
         || echo -e "  ${YLW}!${RST} Some failed to install — you can install them manually later"
 fi
 
-# ---------- 2/8: Customize and install (entry point + modules) ----------
-step "2/8  Installing and customizing Ghost Mode (replacing default credentials)"
+# ---------- 2/8: Install entry point + modules ----------
+step "2/8  Installing Ghost Mode"
 mkdir -p "$DEST_BIN" "$DEST_LIB"
-ESC_PASS=$(printf '%s' "$LAPTOP_PASS" | sed -e 's/[\/&]/\\&/g')
-ESC_USER=$(printf '%s' "$LAPTOP_USER" | sed -e 's/[\/&]/\\&/g')
-
-# Every module under lib/ gets the same credential substitution — the actual
-# sudo commands live there now, not in the thin bin/ghostmode entry point.
-for module in "$LIB_SRC"/*.sh; do
-    sed -e "s/CHANGEME_PASSWORD/${ESC_PASS}/g" \
-        -e "s/\bsomeone\b/${ESC_USER}/g" \
-        "$module" > "$DEST_LIB/$(basename "$module")"
-done
+# Saved once, on this machine only. Not written into the git checkout.
+_old_umask=$(umask)
+umask 077
+mkdir -p "$HOME/.config/ghostmode"
+printf '%s\n' "$LAPTOP_PASS" > "$HOME/.config/ghostmode/sudo.pass"
+chmod 700 "$HOME/.config/ghostmode"
+chmod 600 "$HOME/.config/ghostmode/sudo.pass"
+umask "$_old_umask"
+unset _old_umask
+ok "Password saved for automatic sudo — you will not be asked again"
+cp -a "$LIB_SRC"/*.sh "$DEST_LIB/"
 ok "Installed $(ls "$DEST_LIB" | wc -l) modules to $DEST_LIB"
 
-# The entry point itself: substitute credentials (cmd_help/dispatch use none,
-# but keep the same pass for consistency) and bake in the installed lib path
-# so it doesn't depend on being run from a specific working directory.
-sed -e "s/CHANGEME_PASSWORD/${ESC_PASS}/g" \
-    -e "s/\bsomeone\b/${ESC_USER}/g" \
-    -e "s|GHOSTMODE_LIB_DIR:-.*}\"|GHOSTMODE_LIB_DIR:-$DEST_LIB}\"|" \
+sed -e "s|GHOSTMODE_LIB_DIR:-.*}\"|GHOSTMODE_LIB_DIR:-$DEST_LIB}\"|" \
     "$BIN_SRC" > "$DEST_BIN/ghostmode"
 chmod +x "$DEST_BIN/ghostmode"
 ok "Done: $DEST_BIN/ghostmode"
+
+step "Installing the privileged helper (fallback if the saved password file is removed)"
+echo "$LAPTOP_PASS" | sudo -S install -m 755 -o root -g root \
+    "$PACK_DIR/bin/ghostmode-priv" /usr/local/libexec/ghostmode-priv
+SUDOERS_TMP=$(mktemp)
+printf '%s\n' \
+    "# Ghost Mode — removed by ghostmode destroy." \
+    "${LAPTOP_USER} ALL=(root) NOPASSWD: /usr/local/libexec/ghostmode-priv" \
+    > "$SUDOERS_TMP"
+if echo "$LAPTOP_PASS" | sudo -S visudo -cf "$SUDOERS_TMP" >/dev/null; then
+    echo "$LAPTOP_PASS" | sudo -S install -m 440 -o root -g root "$SUDOERS_TMP" /etc/sudoers.d/ghostmode
+    ok "sudoers drop-in installed"
+else
+    rm -f "$SUDOERS_TMP"
+    fail "sudoers check failed — nothing was installed to /etc/sudoers.d"
+fi
+rm -f "$SUDOERS_TMP"
 
 # ---------- 3/8: systemd units (system-level, not --user) ----------
 step "3/8  Installing systemd units (power-saving settings, system-level for reliability)"
@@ -128,11 +142,39 @@ MemoryMax=200M
 ExecStartPre=/bin/sleep 30
 # -------------------------------------
 ExecStart=${DEST_BIN}/ghostmode auto
-StandardOutput=journal
+StandardOutput=null
 StandardError=journal
 RemainAfterExit=no
 UNIT
-cp "$SYSD_DIR/ghostmode-timer.timer" /tmp/ghostmode-timer.timer
+# shellcheck source=lib/01-globals.sh
+source "$DEST_LIB/01-globals.sh"
+# shellcheck source=lib/21-timer.sh
+source "$DEST_LIB/21-timer.sh"
+read -rp "Auto-clean interval [default: 1h] (examples: 30min, 2h, 1d): " CLEAN_EVERY
+CLEAN_EVERY="${CLEAN_EVERY:-1h}"
+if ! TIMER_SPEC=$(_timer_normalize "$CLEAN_EVERY"); then
+    fail "Interval not understood. Use 30min, 2h, or 1d"
+fi
+mkdir -p "$HOME/.config/ghostmode"
+printf '%s\n' "$TIMER_SPEC" > "$HOME/.config/ghostmode/timer.interval"
+TIMER_DELAY=3min
+if [[ "$TIMER_SPEC" =~ ^([0-9]+)min$ && "${BASH_REMATCH[1]}" -lt 10 ]]; then
+    TIMER_DELAY=30s
+fi
+cat > /tmp/ghostmode-timer.timer << EOF
+[Unit]
+Description=Ghost Mode Timer — every ${TIMER_SPEC}
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=${TIMER_SPEC}
+AccuracySec=1min
+RandomizedDelaySec=${TIMER_DELAY}
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
 echo "$LAPTOP_PASS" | sudo -S mv /tmp/ghostmode-timer.service /tmp/ghostmode-timer.timer /etc/systemd/system/
 echo "$LAPTOP_PASS" | sudo -S chown root:root /etc/systemd/system/ghostmode-timer.service /etc/systemd/system/ghostmode-timer.timer
 ok "Installed to /etc/systemd/system/"
@@ -149,7 +191,7 @@ fi
 step "4/8  Enabling and starting the timer"
 echo "$LAPTOP_PASS" | sudo -S systemctl daemon-reload
 echo "$LAPTOP_PASS" | sudo -S systemctl enable --now ghostmode-timer.timer
-ok "Timer enabled and running hourly"
+ok "Timer enabled (${TIMER_SPEC})"
 
 # ---------- 5/8: lingering ----------
 step "5/8  Enabling lingering (runs without an open session)"
@@ -186,6 +228,25 @@ if [[ "$AS_DISABLED" -eq 1 ]]; then
 else
     ok "Already disabled / not installed"
 fi
+
+# shellcheck source=lib/14-history.sh
+source "$DEST_LIB/14-history.sh"
+_history_write_guard
+_history_save_sizes
+_history_ensure_zshrc_line
+ok "Shell history guard installed. New terminals will not record commands."
+
+CORE_TMP=$(mktemp)
+printf '%s\n' '* hard core 0' > "$CORE_TMP"
+echo "$LAPTOP_PASS" | sudo -S install -m 644 -o root -g root "$CORE_TMP" /etc/security/limits.d/ghostmode-nocore.conf
+rm -f "$CORE_TMP"
+ok "Core dumps disabled for new logins"
+
+WIFI_TMP=$(mktemp)
+printf '%s\n' '[device]' 'wifi.scan-rand-mac-address=yes' > "$WIFI_TMP"
+echo "$LAPTOP_PASS" | sudo -S install -m 644 -o root -g root "$WIFI_TMP" /etc/NetworkManager/conf.d/ghostmode-wifi-rand.conf
+rm -f "$WIFI_TMP"
+ok "Wi-Fi scan MAC randomization drop-in installed"
 
 # ---------- 6/8: Tor (optional) ----------
 step "6/8  Tor — full anonymity for all device connections (optional)"
@@ -256,8 +317,9 @@ else
 fi
 
 echo ""
-echo -e "${GRN}${BOLD}[+] Setup complete 100%.${RST}"
+echo -e "${GRN}${BOLD}[+] Setup finished.${RST}"
+echo -e "  ${YLW}This is not 100% protection. The router, ISP, cloud accounts, firmware, and SSD spare area stay out of reach.${RST}"
 echo -e "  Commands: ${BOLD}ghostmode${RST} | ${BOLD}ghostmode status${RST} | ${BOLD}ghostmode delete${RST} | ${BOLD}ghostmode help${RST}"
 echo ""
 
-unset LAPTOP_PASS ESC_PASS
+unset LAPTOP_PASS

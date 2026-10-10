@@ -1,11 +1,10 @@
 [Unit]
-Description=Ghost Mode Timer — runs every 1 hour (persistent)
+Description=Ghost Mode Timer — every 1h (change with: ghostmode timer)
 
 [Timer]
-OnCalendar=hourly
-# AccuracySec واسعة + تأخير عشوائي = النظام يجمّع وقت الاستيقاظ مع مهام أخرى
-# بدل ما يوقظ المعالج بدقة كل ساعة — يقلل استهلاك البطارية والحرارة
-AccuracySec=5min
+OnBootSec=2min
+OnUnitActiveSec=1h
+AccuracySec=1min
 RandomizedDelaySec=3min
 Persistent=true
 

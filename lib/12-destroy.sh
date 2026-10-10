@@ -18,6 +18,7 @@ cmd_destroy() {
     echo "  - Remove every systemd unit this tool created"
     echo "  - Restore zsh-autosuggestions and GeoClue to their original state"
     echo "  - Delete all Ghost Mode config/state under ~/.config/ghostmode"
+    echo "    including the saved sudo password"
     echo "  - Remove the shell aliases it added, if any"
     echo "  - Delete this script itself (~/.local/bin/ghostmode)"
     echo ""
@@ -34,47 +35,44 @@ cmd_destroy() {
 
     echo -e "${BLD}${CYN}[ 2/7 ] Stopping Tor / anonsurf / removing the torbrowser user ]${RST}"
     if command -v anonsurf >/dev/null 2>&1; then
-        echo CHANGEME_PASSWORD | sudo -S anonsurf stop 2>/dev/null
+        _gm_sudo anonsurf stop 2>/dev/null || true
     fi
+    _shield_off || true
     if id -u torbrowser >/dev/null 2>&1; then
-        echo CHANGEME_PASSWORD | sudo -S pkill -u torbrowser 2>/dev/null
-        echo CHANGEME_PASSWORD | sudo -S userdel -r torbrowser 2>/dev/null
+        _gm_sudo pkill -u torbrowser 2>/dev/null
+        _gm_sudo userdel -r torbrowser 2>/dev/null
     fi
-    echo CHANGEME_PASSWORD | sudo -S iptables -P OUTPUT ACCEPT 2>/dev/null
-    echo CHANGEME_PASSWORD | sudo -S iptables -F OUTPUT 2>/dev/null
-    echo CHANGEME_PASSWORD | sudo -S iptables -t nat -F OUTPUT 2>/dev/null
+    _gm_sudo iptables -P OUTPUT ACCEPT 2>/dev/null
+    _gm_sudo iptables -F OUTPUT 2>/dev/null
+    _gm_sudo iptables -t nat -F OUTPUT 2>/dev/null
 
     echo -e "${BLD}${CYN}[ 3/7 ] Removing systemd units ]${RST}"
     local unit
     for unit in ghostmode-timer.timer ghostmode-timer.service \
                 ghostmode-tor-boot.service ghostmode-killswitch.service \
                 ghostmode-fingerprint.service; do
-        echo CHANGEME_PASSWORD | sudo -S systemctl disable --now "$unit" 2>/dev/null
-        echo CHANGEME_PASSWORD | sudo -S rm -f "/etc/systemd/system/$unit" 2>/dev/null
+        _gm_sudo systemctl disable --now "$unit" 2>/dev/null
+        _gm_sudo rm -f "/etc/systemd/system/$unit" 2>/dev/null
         systemctl --user disable --now "$unit" 2>/dev/null
         rm -f "$HOME/.config/systemd/user/$unit" 2>/dev/null
     done
-    echo CHANGEME_PASSWORD | sudo -S systemctl daemon-reload 2>/dev/null
+    _gm_sudo systemctl daemon-reload 2>/dev/null
     systemctl --user daemon-reload 2>/dev/null
 
     echo -e "${BLD}${CYN}[ 4/7 ] Restoring GeoClue to normal ]${RST}"
-    echo CHANGEME_PASSWORD | sudo -S rm -f /etc/geolocation 2>/dev/null
-    echo CHANGEME_PASSWORD | sudo -S bash -c '
-        CONF=/etc/geoclue/geoclue.conf
-        sed -i "/\[static-source\]/,/^\[/ s/^enable=.*/enable=false/" "$CONF" 2>/dev/null
-        sed -i "/\[wifi\]/,/^\[/ s/^enable=.*/enable=true/" "$CONF" 2>/dev/null
-    ' 2>/dev/null
-    echo CHANGEME_PASSWORD | sudo -S systemctl restart geoclue 2>/dev/null
+    _gm_sudo rm -f /etc/geolocation 2>/dev/null || true
+    _geoclue_set false true || true
+    _gm_sudo systemctl restart geoclue 2>/dev/null || true
 
-    echo -e "${BLD}${CYN}[ 5/7 ] Restoring zsh-autosuggestions ]${RST}"
-    local f
-    for f in /usr/share/zsh-autosuggestions/zsh-autosuggestions.zsh.ghostmode-disabled \
-             /usr/share/zsh-autosuggestions/zsh-autosuggestions.plugin.zsh.ghostmode-disabled; do
-        [[ -f "$f" ]] && echo CHANGEME_PASSWORD | sudo -S mv "$f" "${f%.ghostmode-disabled}" 2>/dev/null
-    done
+    echo -e "${BLD}${CYN}[ 5/7 ] Restoring shell history, then suggestions ]${RST}"
+    _history_destroy_restore || echo -e "  ${RED}✘${RST}  Could not fully restore the suggestion plugin"
 
     echo -e "${BLD}${CYN}[ 6/7 ] Removing config, state, and shell aliases ]${RST}"
-    rm -rf "$HOME/.config/ghostmode" 2>/dev/null
+    _gm_sudo rm -f /etc/sudoers.d/ghostmode /usr/local/libexec/ghostmode-priv \
+        /etc/security/limits.d/ghostmode-nocore.conf \
+        /etc/NetworkManager/conf.d/ghostmode-wifi-rand.conf \
+        /etc/NetworkManager/conf.d/ghostmode-shield.conf 2>/dev/null || true
+    rm -rf "$HOME/.config/ghostmode" 2>/dev/null || true
     local rc
     for rc in "$HOME/.bashrc" "$HOME/.zshrc"; do
         [[ -f "$rc" ]] && sed -i '/# --- Ghost Mode ---/,+2d' "$rc" 2>/dev/null

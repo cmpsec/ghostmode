@@ -58,6 +58,7 @@ cmd_status() {
     echo -e "${BLD}${CYN}[ Cursor IDE ]${RST}"
     _check_trace_paths
     _check_cursor_projects
+    _check_cursor_databases
     _check_cursor_plans
     _check_cursor_ai
     _check_dir  ~/.config/Cursor/logs       "Cursor/logs"
@@ -117,14 +118,17 @@ cmd_status() {
 
     echo ""
     echo -e "${BLD}${CYN}[ Swap ]${RST}"
-    local swap_used
-    swap_used=$(free -h | awk '/^Swap:/ {print $3}')
-    local padded
+    local swap_used padded
     padded=$(printf "%-22s" "swap usage")
-    if [[ "$swap_used" == "0B" || "$swap_used" == "0" ]]; then
-        echo -e "  ${GRN}✔${RST}  ${padded} → ${GRN}empty${RST}"
+    if ! awk 'NR>1 { found=1 } END { exit !found }' /proc/swaps 2>/dev/null; then
+        echo -e "  ${GRN}✔${RST}  ${padded} → ${GRN}not present${RST}"
     else
-        echo -e "  ${RED}✘${RST}  ${padded} → ${YLW}${swap_used}${RST}"
+        swap_used=$(free -h | awk '/^Swap:/ {print $3}')
+        if [[ "$swap_used" == "0B" || "$swap_used" == "0" ]]; then
+            echo -e "  ${GRN}✔${RST}  ${padded} → ${GRN}empty${RST}"
+        else
+            echo -e "  ${RED}✘${RST}  ${padded} → ${YLW}${swap_used}${RST}"
+        fi
     fi
 
     echo ""
@@ -211,374 +215,548 @@ cmd_status() {
     fi
     local pd3
     pd3=$(printf "%-22s" "lingering (boot)")
-    if loginctl show-user someone 2>/dev/null | grep -q "Linger=yes"; then
+    if loginctl show-user "$USER" 2>/dev/null | grep -q "Linger=yes"; then
         echo -e "  ${GRN}✔${RST}  ${pd3} → ${GRN}enabled (survives reboot)${RST}"
     else
         echo -e "  ${RED}✘${RST}  ${pd3} → ${RED}disabled${RST}"
     fi
 
     echo ""
+    _shield_status
+    echo ""
+    echo -e "${BLD}${CYN}[ Machine ]${RST}"
+    _check_disk_encryption
+    _check_screen_lock
+    _check_core_limit
+    _check_home_perms
+    _check_hibernate
+    _check_fingerprint_auto
+    _check_cursor_sockets
+    echo ""
+    echo -e "${BLD}${CYN}[ Git credentials ]${RST}"
+    _check_git_credentials
+
+    echo ""
     echo -e "${BLD}${BLU}══════════════════════════════════════════════════${RST}"
+    echo -e "  ${GRY}Green here means that layer checked out. It does not mean the machine is fully clean.${RST}"
     echo ""
 }
 
-_clean_cursor_projects() {
-    local proj_dir=~/.cursor/projects
-    [[ ! -d "$proj_dir" ]] && return
-    find "$proj_dir" -type d -name "agent-transcripts" 2>/dev/null | while read -r d; do
-        rm -rf "${d:?}"/* 2>/dev/null
-    done
-    find "$proj_dir" -type d -name "terminals" 2>/dev/null | while read -r d; do
-        rm -rf "${d:?}"/* 2>/dev/null
-    done
-    local active_tmp
-    active_tmp=$(ls -td "$proj_dir"/tmp-*/ 2>/dev/null | head -1)
-    active_tmp="${active_tmp%/}"
-    for d in "$proj_dir"/*/; do
-        [[ ! -d "$d" ]] && continue
-        local abs="${d%/}"
-        [[ -n "$active_tmp" && "$abs" == "$active_tmp" ]] && continue
-        rm -rf "$abs" 2>/dev/null
-    done
-    find "$proj_dir" -maxdepth 1 -type f -delete 2>/dev/null
+
+_step() {
+    local label="$1"
+    shift
+    _GM_STEP_MSG=""
+    local rc=0
+    "$@" || rc=$?
+    local padded
+    padded=$(printf "%-45s" "$label")
+    case "$rc" in
+        0)
+            echo -e "  ${GRN}✔${RST}  ${padded} ${GRN}cleared${RST}"
+            [[ -n "$_GM_STEP_MSG" ]] && echo -e "       ${GRY}${_GM_STEP_MSG}${RST}"
+            ;;
+        2)
+            echo -e "  ${YLW}!${RST}  ${padded} ${YLW}${_GM_STEP_MSG:-skipped}${RST}"
+            [[ ! -t 1 ]] && echo -e "  ${YLW}!${RST}  ${label}: ${_GM_STEP_MSG:-skipped}" >&2
+            ;;
+        *)
+            echo -e "  ${RED}✘${RST}  ${padded} ${RED}${_GM_STEP_MSG:-still present}${RST}"
+            [[ ! -t 1 ]] && echo -e "  ${RED}✘${RST}  ${label}: ${_GM_STEP_MSG:-still present}" >&2
+            _GM_STEP_FAILS=$((_GM_STEP_FAILS + 1))
+            ;;
+    esac
+    sleep 0.4
 }
 
-_clean_cursor_plans() {
-    local plans_dir=~/.cursor/plans
-    [[ ! -d "$plans_dir" ]] && return
-    find "$plans_dir" -mindepth 1 -delete 2>/dev/null
+_empty_dir() {
+    local d
+    for d in "$@"; do
+        [[ -d "$d" ]] || continue
+        find "$d" -mindepth 1 -depth -delete 2>/dev/null || return 1
+    done
 }
 
-_clean_cursor_ai() {
-    local ai_dir=~/.cursor/ai-tracking
-    [[ ! -d "$ai_dir" ]] && return
-    if [[ -f "$ai_dir/ai-code-tracking.db" ]]; then
-        rm -f "$ai_dir/ai-code-tracking.db" "$ai_dir/ai-code-tracking.db-wal" \
-              "$ai_dir/ai-code-tracking.db-shm" 2>/dev/null
-        [[ -f "$ai_dir/ai-code-tracking.db" ]] && \
-            sqlite3 "$ai_dir/ai-code-tracking.db" \
-            "DELETE FROM code_tracking; DELETE FROM sqlite_sequence; VACUUM;" 2>/dev/null
+_dir_clean() {
+    local d
+    for d in "$@"; do
+        [[ -d "$d" ]] || continue
+        if [[ -n "$(find "$d" -mindepth 1 -print -quit 2>/dev/null)" ]]; then
+            _GM_STEP_MSG="not empty: ${d/#$HOME/~}"
+            return 1
+        fi
+    done
+    return 0
+}
+
+_c_clipboard() {
+    echo -n '' | xclip -selection clipboard 2>/dev/null || true
+    echo -n '' | xclip -selection primary 2>/dev/null || true
+    rm -f -- "$HOME/.cache/xfce4/clipman/textsrc" 2>/dev/null || true
+    mkdir -p "$HOME/.cache/xfce4/clipman" 2>/dev/null || true
+    : > "$HOME/.cache/xfce4/clipman/textsrc" 2>/dev/null || true
+    local clip
+    clip=$(xclip -selection clipboard -o 2>/dev/null || true)
+    if [[ -n "$clip" ]]; then
+        _GM_STEP_MSG="clipboard still has data"
+        return 1
     fi
-    find "$ai_dir" -maxdepth 1 -type f -not -name "ai-code-tracking.db" -delete 2>/dev/null
+    if [[ -s "$HOME/.cache/xfce4/clipman/textsrc" ]]; then
+        _GM_STEP_MSG="clipman history still has data"
+        return 1
+    fi
+    return 0
+}
+
+_c_app_histories() {
+    rm -f -- \
+        "$HOME/.python_history" "$HOME/.node_repl_history" "$HOME/.mysql_history" \
+        "$HOME/.psql_history" "$HOME/.pgpass" "$HOME/.pg_service.conf" \
+        "$HOME/.sqlite_history" "$HOME/.lesshst" "$HOME/.viminfo" "$HOME/.wget-hsts" \
+        "$HOME/.bash_sessions_startup" "$HOME/.xsession-errors" "$HOME/.xsession-errors.old"
+    local f
+    for f in "$HOME/.python_history" "$HOME/.mysql_history" "$HOME/.sqlite_history" "$HOME/.viminfo" "$HOME/.pgpass"; do
+        if [[ -s "$f" ]]; then
+            _GM_STEP_MSG="still present: ${f/#$HOME/~}"
+            return 1
+        fi
+    done
+    return 0
+}
+
+_c_recent() {
+    rm -f -- "$HOME/.local/share/recently-used.xbel" "$HOME/.local/share/recently-used.xbel."* 2>/dev/null || true
+    ln -sfn /dev/null "$HOME/.local/share/recently-used.xbel" 2>/dev/null || return 1
+    rm -rf -- "$HOME/.local/share/gvfs-metadata" 2>/dev/null || true
+    if [[ -f "$HOME/.local/share/recently-used.xbel" && ! -L "$HOME/.local/share/recently-used.xbel" && -s "$HOME/.local/share/recently-used.xbel" ]]; then
+        _GM_STEP_MSG="recently-used.xbel still has entries"
+        return 1
+    fi
+    return 0
+}
+
+_c_cache() {
+    _empty_dir "$HOME/.cache/thumbnails" "$HOME/.thumbnails" "$HOME/.cache/sessions" \
+        "$HOME/.cache/mozilla" "$HOME/.cache/chromium" "$HOME/.cache/google-chrome" \
+        "$HOME/.cache/pip" "$HOME/.cache/claude" || true
+    _dir_clean "$HOME/.cache/thumbnails" "$HOME/.thumbnails" "$HOME/.cache/pip"
+}
+
+_c_wal() {
+    find "$HOME/.config" "$HOME/.local/share" -maxdepth 8 \
+        \( -name '*.db-wal' -o -name '*.db-shm' -o -name '*.sqlite-wal' -o -name '*.sqlite-shm' \
+           -o -name '*.vscdb-wal' -o -name '*.vscdb-shm' \) \
+        -type f -delete 2>/dev/null || true
+    local left
+    left=$(find "$HOME/.config/Cursor" "$HOME/.cursor" -name '*.vscdb-wal' -o -name 'state.vscdb-wal' -type f -size +0c 2>/dev/null | head -n 1 || true)
+    if [[ -n "$left" && "$GHOSTMODE_MODE" != "auto" && -z "$(_cursor_running)" ]]; then
+        _GM_STEP_MSG="a WAL file is still present"
+        return 1
+    fi
+    if [[ -n "$left" && -n "$(_cursor_running)" ]]; then
+        _GM_STEP_MSG="Cursor is running, left its open WAL files"
+        return 2
+    fi
+    return 0
+}
+
+_c_zeitgeist() {
+    rm -rf -- "$HOME/.local/share/zeitgeist" "$HOME/.local/share/tracker" 2>/dev/null || true
+    tracker3 reset -s -r >/dev/null 2>&1 || true
+    tracker reset --hard >/dev/null 2>&1 || true
+    _dir_clean "$HOME/.local/share/zeitgeist" "$HOME/.local/share/tracker"
+}
+
+_c_tmp() {
+    find /tmp -maxdepth 1 \
+        -not -name 'tmp' \
+        -not -name 'systemd-private*' \
+        -not -name 'snap-private-tmp' \
+        -not -name '.X*' \
+        -not -name '.ICE*' \
+        -not -name '.font-unix' \
+        -not -name '.org.chromium.*' \
+        -not -name '.mount_cursor*' \
+        \( -user "$USER" \) \
+        \( -type f -o -type d \) \
+        -exec rm -rf {} + 2>/dev/null || true
+    local sock
+    shopt -s nullglob
+    for sock in /tmp/*.sock /tmp/*.socket; do
+        [[ -S "$sock" ]] || continue
+        [[ "$(stat -c '%U' "$sock" 2>/dev/null)" == "$USER" ]] || continue
+        ss -x 2>/dev/null | grep -qF "$sock" || rm -f -- "$sock" 2>/dev/null || true
+    done
+    shopt -u nullglob
+    return 0
+}
+
+_c_vartmp() {
+    find /var/tmp -maxdepth 1 -user "$USER" -not -name 'tmp' -not -name 'systemd-private*' \
+        -exec rm -rf {} + 2>/dev/null || true
+    return 0
+}
+
+_c_home_dirs() {
+    local d
+    for d in "$HOME/Downloads" "$HOME/Music" "$HOME/Videos" "$HOME/Pictures" \
+             "$HOME/Documents" "$HOME/Desktop" "$HOME/Templates" "$HOME/Public"; do
+        [[ -d "$d" ]] || continue
+        find "$d" -mindepth 1 -depth -delete 2>/dev/null || true
+    done
+    _dir_clean "$HOME/Downloads" "$HOME/Documents" "$HOME/Desktop"
+}
+
+_c_home_scripts() {
+    find "$HOME" -maxdepth 1 -type f \
+        \( -name '*.sh' -o -name '*.py' -o -name '*.pl' -o -name '*.rb' -o -name '*.bash' -o -name '*.zsh' \) \
+        -not -name '.*' -delete 2>/dev/null || true
+    local left
+    left=$(find "$HOME" -maxdepth 1 -type f \
+        \( -name '*.sh' -o -name '*.py' -o -name '*.pl' -o -name '*.rb' \) \
+        -not -name '.*' -print -quit 2>/dev/null || true)
+    if [[ -n "$left" ]]; then
+        _GM_STEP_MSG="a script is still in the home directory"
+        return 1
+    fi
+    return 0
+}
+
+_c_journal() {
+    _gm_sudo journalctl --rotate -q || { _GM_STEP_MSG="journalctl failed"; return 1; }
+    _gm_sudo journalctl --vacuum-time=1s -q || { _GM_STEP_MSG="journal vacuum failed"; return 1; }
+    _gm_sudo find /var/log/journal -type f \( -name '*.journal~' \) -delete 2>/dev/null || true
+    _gm_sudo systemctl kill --kill-who=main -s USR2 systemd-journald 2>/dev/null || true
+    return 0
+}
+
+_c_syslogs() {
+    local f failed=0
+    for f in /var/log/auth.log /var/log/syslog /var/log/kern.log \
+             /var/log/wtmp /var/log/btmp /var/log/lastlog \
+             /var/log/dpkg.log /var/log/faillog; do
+        [[ -e "$f" ]] || continue
+        _gm_sudo truncate -s 0 "$f" || failed=1
+        if [[ -s "$f" ]]; then
+            failed=1
+        fi
+    done
+    if [[ "$failed" -eq 1 ]]; then
+        _GM_STEP_MSG="a system log still has content or truncate was refused"
+        return 1
+    fi
+    return 0
+}
+
+_c_swap() {
+    if ! awk 'NR>1 { found=1 } END { exit !found }' /proc/swaps 2>/dev/null; then
+        _GM_STEP_MSG="no swap on this machine"
+        return 0
+    fi
+    _gm_sudo swapoff -a || { _GM_STEP_MSG="swapoff failed"; return 1; }
+    _gm_sudo swapon -a || { _GM_STEP_MSG="swapon failed"; return 1; }
+    return 0
+}
+
+_c_ssh() {
+    rm -f -- "$HOME/.ssh/id_"* "$HOME/.ssh/"*.pem "$HOME/.ssh/"*.key \
+        "$HOME/.ssh/known_hosts" "$HOME/.ssh/known_hosts.old" \
+        "$HOME/.ssh/authorized_keys" "$HOME/.ssh/config" 2>/dev/null || true
+    mkdir -p "$HOME/.ssh"
+    : > "$HOME/.ssh/known_hosts"
+    chmod 700 "$HOME/.ssh"
+    chmod 600 "$HOME/.ssh/known_hosts"
+    if [[ -s "$HOME/.ssh/known_hosts" ]]; then
+        _GM_STEP_MSG="known_hosts still has entries"
+        return 1
+    fi
+    local left
+    left=$(find "$HOME/.ssh" -maxdepth 1 -type f \( -name 'id_*' -o -name '*.pem' -o -name 'config' \) -print -quit 2>/dev/null || true)
+    if [[ -n "$left" ]]; then
+        _GM_STEP_MSG="an SSH key or config is still present"
+        return 1
+    fi
+    return 0
+}
+
+_c_vnc() {
+    if [[ -d "$HOME/.vnc" ]]; then
+        find "$HOME/.vnc" -maxdepth 2 \
+            \( -name '*.log' -o -name '*.pid' -o -name 'xstartup' -o -name 'passwd' -o -name 'vncpasswd' \) \
+            -type f -delete 2>/dev/null || true
+    fi
+    find "$HOME" -maxdepth 3 \( -name '*.vnc' -o -name 'vncpasswd' \) -type f -delete 2>/dev/null || true
+    find "$HOME" /tmp -maxdepth 2 \
+        \( -name '.x11vncpass' -o -name 'x11vncpass' -o -name 'vp' \) \
+        -type f -delete 2>/dev/null || true
+    rm -rf -- "$HOME/.config/tigervnc" 2>/dev/null || true
+    rm -f -- "$HOME/setup_vnc.py" 2>/dev/null || true
+    return 0
+}
+
+_c_remmina() {
+    rm -rf -- "$HOME/.local/share/remmina" "$HOME/.remmina" 2>/dev/null || true
+    _dir_clean "$HOME/.local/share/remmina" "$HOME/.remmina"
+}
+
+_c_firefox() {
+    if _proc_running firefox firefox-esr; then
+        _GM_STEP_MSG="Firefox is open, skipped its databases"
+        return 2
+    fi
+    local ff_profile db
+    ff_profile=$(find "$HOME/.mozilla/firefox" -maxdepth 1 -type d \
+        \( -name '*.default-esr' -o -name '*.default' \) 2>/dev/null | head -1)
+    if [[ -z "$ff_profile" ]]; then
+        return 0
+    fi
+    for db in places.sqlite cookies.sqlite formhistory.sqlite webappstore.sqlite \
+              content-prefs.sqlite favicons.sqlite storage.sqlite; do
+        rm -f -- "$ff_profile/$db" "$ff_profile/${db}-wal" "$ff_profile/${db}-shm"
+    done
+    rm -f -- "$ff_profile/sessionstore.jsonlz4" 2>/dev/null || true
+    rm -f -- "$ff_profile/sessionstore-backups/"*.jsonlz4 2>/dev/null || true
+    rm -rf -- "$ff_profile/cache2" "$ff_profile/startupCache" "$HOME/.cache/firefox" "$HOME/.cache/mozilla" 2>/dev/null || true
+    if [[ -s "$ff_profile/places.sqlite" ]]; then
+        _GM_STEP_MSG="Firefox places.sqlite is still present"
+        return 1
+    fi
+    return 0
+}
+
+_c_gnome() {
+    rm -f -- "$HOME/.local/share/gnome-shell/application_state" \
+        "$HOME/.local/share/gnome-shell/session-active-history.json" \
+        "$HOME/.local/share/gnome-shell/session.gvdb" 2>/dev/null || true
+    return 0
+}
+
+_c_texteditor() {
+    rm -f -- "$HOME/.local/share/org.gnome.TextEditor/recently-used.xbel" \
+        "$HOME/.local/share/org.gnome.TextEditor/session.gvariant" 2>/dev/null || true
+    rm -rf -- "$HOME/.local/share/org.gnome.TextEditor/drafts" 2>/dev/null || true
+    return 0
+}
+
+_c_cherrytree() {
+    local cfg="$HOME/.config/cherrytree/config.cfg"
+    [[ -f "$cfg" ]] || return 0
+    sed -i "s|^pick_dir_file=.*|pick_dir_file=$HOME|" "$cfg" || return 1
+    sed -i "s|^pick_dir_export=.*|pick_dir_export=$HOME|" "$cfg" || return 1
+    sed -i "s|^pick_dir_import=.*|pick_dir_import=$HOME|" "$cfg" || return 1
+    sed -i "s|^pick_dir_img=.*|pick_dir_img=$HOME|" "$cfg" || return 1
+    sed -i "s|^recent_docs=true|recent_docs=false|" "$cfg" || return 1
+    return 0
+}
+
+_c_trash() {
+    _empty_dir "$HOME/.local/share/Trash/files" "$HOME/.local/share/Trash/info" \
+        "$HOME/.local/share/Trash/expunged" || true
+    _dir_clean "$HOME/.local/share/Trash/files" "$HOME/.local/share/Trash/info"
+}
+
+_c_service_logs() {
+    _gm_sudo find /var/log/postgresql -maxdepth 1 -name '*.log' -type f -exec truncate -s 0 {} \; 2>/dev/null || true
+    local f
+    for f in /var/log/apache2/access.log /var/log/apache2/error.log \
+             /var/log/apache2/other_vhosts_access.log \
+             /var/log/nginx/access.log /var/log/nginx/error.log \
+             /var/log/macchanger.log; do
+        [[ -e "$f" ]] || continue
+        _gm_sudo truncate -s 0 "$f" || true
+    done
+    return 0
+}
+
+_c_dconf() {
+    dconf reset /org/gnome/portal/filechooser/org.gnome.Settings/last-folder-path 2>/dev/null || true
+    dconf reset /org/gtk/settings/file-chooser/recent-files-max-age 2>/dev/null || true
+    return 0
+}
+
+_c_locate() {
+    _gm_sudo truncate -s 0 /var/lib/mlocate/mlocate.db 2>/dev/null || true
+    _gm_sudo truncate -s 0 /var/lib/plocate/plocate.db 2>/dev/null || true
+    _gm_sudo updatedb 2>/dev/null || true
+    return 0
+}
+
+_c_crash() {
+    _gm_sudo rm -rf -- /var/crash/* 2>/dev/null || true
+    rm -rf -- "$HOME/.cache/apport" 2>/dev/null || true
+    return 0
+}
+
+_c_chromium() {
+    local base prof
+    if _proc_running chrome chromium google-chrome brave brave-browser; then
+        _GM_STEP_MSG="a Chromium-family browser is open, skipped its databases"
+        return 2
+    fi
+    for base in "$HOME/.config/google-chrome" "$HOME/.config/chromium" "$HOME/.config/BraveSoftware/Brave-Browser"; do
+        [[ -d "$base" ]] || continue
+        for prof in "$base/Default" "$base"/Profile*; do
+            [[ -d "$prof" ]] || continue
+            rm -f -- "$prof/History" "$prof/History-journal" "$prof/Cookies" "$prof/Cookies-journal" \
+                "$prof/Web Data" "$prof/Web Data-journal" "$prof/Login Data" "$prof/Login Data-journal" 2>/dev/null || true
+            rm -rf -- "$prof/Sessions" "$prof/Session Storage" "$prof/Local Storage" "$prof/IndexedDB" 2>/dev/null || true
+        done
+        rm -rf -- "$base/Crash Reports" 2>/dev/null || true
+    done
+    return 0
+}
+
+_c_apt() {
+    _gm_sudo truncate -s 0 /var/log/apt/history.log /var/log/apt/term.log 2>/dev/null || {
+        _GM_STEP_MSG="could not empty apt logs"
+        return 1
+    }
+    return 0
+}
+
+_c_user_journal() {
+    rm -rf -- "$HOME/.local/state/journal" 2>/dev/null || true
+    return 0
+}
+
+_c_dns() {
+    _gm_sudo resolvectl flush-caches 2>/dev/null || true
+    _gm_sudo systemd-resolve --flush-caches 2>/dev/null || true
+    _gm_sudo ip neigh flush all 2>/dev/null || {
+        _GM_STEP_MSG="could not flush the ARP cache"
+        return 1
+    }
+    return 0
+}
+
+_c_pentest() {
+    rm -rf -- "$HOME/.msf4/history" "$HOME/.msf4/logs" "$HOME/.msf4/loot" \
+        "$HOME/.msf4/local" "$HOME/.msf4/store.db" 2>/dev/null || true
+    rm -f -- "$HOME/.john/john.pot" "$HOME/.john/john.log" 2>/dev/null || true
+    find "$HOME/.local/share/hashcat" "$HOME/.hashcat" -maxdepth 1 -name '*.potfile' -type f -delete 2>/dev/null || true
+    rm -rf -- "$HOME/.local/share/hashcat/sessions" "$HOME/.hashcat/sessions" 2>/dev/null || true
+    rm -rf -- "$HOME/.cme" "$HOME/.nxc" "$HOME/.evil-winrm" "$HOME/.local/share/sqlmap" "$HOME/.sqlmap" 2>/dev/null || true
+    _gm_sudo rm -rf -- /usr/share/responder/logs/* 2>/dev/null || true
+    rm -f -- "$HOME/.config/wireshark/recent" "$HOME/.config/wireshark/recent_common" 2>/dev/null || true
+    rm -rf -- "$HOME/.BurpSuite" "$HOME/.java/.userPrefs/burp" 2>/dev/null || true
+    return 0
+}
+
+_c_claude() {
+    local claude_up=0
+    if _proc_running claude Claude; then
+        claude_up=1
+    fi
+    if [[ "$claude_up" -eq 0 ]]; then
+        local db
+        while IFS= read -r db; do
+            rm -f -- "$db" "${db}-wal" "${db}-shm" 2>/dev/null || true
+        done < <(find "$HOME/.claude" "$HOME/.config/Claude" -type f \
+            \( -name '*.db' -o -name '*.sqlite' -o -name '*.sqlite3' \) 2>/dev/null)
+        rm -rf -- "$HOME/.claude/projects" "$HOME/.claude/todos" \
+            "$HOME/.claude/shell-snapshots" "$HOME/.claude/statsig" \
+            "$HOME/.claude/ide" 2>/dev/null || true
+        rm -f -- "$HOME/.claude.json" "$HOME/.claude.json.backup" 2>/dev/null || true
+    else
+        _GM_STEP_MSG="Claude is running, skipped its session databases"
+    fi
+    rm -rf -- "$HOME/.config/Claude/Cache" "$HOME/.config/Claude/CachedData" \
+        "$HOME/.config/Claude/GPUCache" "$HOME/.config/Claude/Crashpad" \
+        "$HOME/.config/Claude/Backups" "$HOME/.config/Claude/logs" 2>/dev/null || true
+    rm -rf -- "$HOME/.config/Claude/User/History" 2>/dev/null || true
+    rm -f -- "$HOME/.config/Claude/Cookies" "$HOME/.config/Claude/Cookies-journal" 2>/dev/null || true
+    if [[ "$claude_up" -eq 1 ]]; then
+        return 2
+    fi
+    return 0
+}
+
+_c_custom() {
+    [[ -s "$GHOSTMODE_CUSTOM_PATHS_FILE" ]] || return 0
+    local p
+    while IFS= read -r p; do
+        [[ -z "$p" ]] && continue
+        if [[ -d "$p" ]]; then
+            find "$p" -mindepth 1 -delete 2>/dev/null || true
+        elif [[ -f "$p" ]]; then
+            : > "$p" 2>/dev/null || true
+        fi
+    done < "$GHOSTMODE_CUSTOM_PATHS_FILE"
+    while IFS= read -r p; do
+        [[ -z "$p" ]] && continue
+        if [[ -d "$p" && -n "$(find "$p" -mindepth 1 -print -quit 2>/dev/null)" ]]; then
+            _GM_STEP_MSG="custom path still has files"
+            return 1
+        fi
+        if [[ -f "$p" && -s "$p" ]]; then
+            _GM_STEP_MSG="custom path still has content"
+            return 1
+        fi
+    done < "$GHOSTMODE_CUSTOM_PATHS_FILE"
+    return 0
 }
 
 _run_clean() {
-    _step "Clipboard (X11 + clipman)" \
-        "echo -n '' | xclip -selection clipboard 2>/dev/null
-         echo -n '' | xclip -selection primary 2>/dev/null
-         rm -f ~/.cache/xfce4/clipman/textsrc 2>/dev/null
-         touch ~/.cache/xfce4/clipman/textsrc 2>/dev/null; true"
-
-    _step "Shell histories" \
-        "cat /dev/null > ~/.zsh_history 2>/dev/null
-         cat /dev/null > ~/.bash_history 2>/dev/null"
-
-    _step "App histories" \
-        "rm -f ~/.python_history ~/.node_repl_history ~/.mysql_history \
-         ~/.psql_history ~/.pgpass ~/.pg_service.conf ~/.sqlite_history ~/.lesshst ~/.viminfo ~/.wget-hsts \
-         ~/.bash_sessions_startup ~/.xsession-errors ~/.xsession-errors.old"
-
-    _step "Recently used & gvfs" \
-        "rm -f ~/.local/share/recently-used.xbel ~/.local/share/recently-used.xbel.* 2>/dev/null
-         ln -sf /dev/null ~/.local/share/recently-used.xbel 2>/dev/null
-         rm -rf ~/.local/share/gvfs-metadata/ 2>/dev/null"
-
-    _step "Thumbnails & cache" \
-        "rm -rf ~/.cache/thumbnails/* ~/.cache/thumbnails/ ~/.thumbnails/* ~/.thumbnails/ ~/.cache/sessions/ \
-         ~/.cache/mozilla/ ~/.cache/chromium/ ~/.cache/google-chrome/ \
-         ~/.cache/pip/ ~/.cache/claude/ 2>/dev/null"
-
-    _step "SQLite WAL/SHM (user config)" \
-        "find ~/.config ~/.local/share -maxdepth 4 \
-         \( -name '*.db-wal' -o -name '*.db-shm' -o -name '*.sqlite-wal' -o -name '*.sqlite-shm' \) \
-         -type f -delete 2>/dev/null; true"
-
-    _step "Cursor IDE traces" \
-        "_clean_trace_paths
-         _clean_cursor_projects
-         _clean_cursor_plans
-         _clean_cursor_ai
-         rm -rf ~/.config/Cursor/logs/ ~/.config/Cursor/Cache/ \
-                ~/.config/Cursor/CachedData/ ~/.config/Cursor/GPUCache/ \
-                ~/.config/Cursor/DawnGraphiteCache/ ~/.config/Cursor/DawnWebGPUCache/ \
-                ~/.config/Cursor/Crashpad/ ~/.config/Cursor/Backups/ 2>/dev/null
-         rm -rf ~/.config/Cursor/User/History/* 2>/dev/null
-         rm -f  ~/.config/Cursor/Cookies ~/.config/Cursor/Cookies-journal \
-                ~/.config/Cursor/DIPS ~/.config/Cursor/DIPS-wal 2>/dev/null"
-
-    _step "Zeitgeist & Tracker" \
-        "rm -rf ~/.local/share/zeitgeist/ ~/.local/share/tracker/ 2>/dev/null
-         tracker3 reset -s -r 2>/dev/null
-         tracker reset --hard 2>/dev/null"
-
-    _step "/tmp (user files only)" \
-        "find /tmp -maxdepth 1 \
-         -not -name 'tmp' \
-         -not -name 'systemd-private*' \
-         -not -name 'snap-private-tmp' \
-         -not -name '.X*' \
-         -not -name '.ICE*' \
-         -not -name '.font-unix' \
-         -not -name '.org.chromium.*' \
-         -not -name '.mount_cursor*' \
-         \( -type f -o -type d \) \
-         \( -type f -delete -o -type d -exec rm -rf {} + \) \
-         2>/dev/null
-         for _sock in /tmp/*.sock /tmp/*.socket; do
-           [[ -S \"\$_sock\" ]] || continue
-           ss -x 2>/dev/null | grep -q \"\$_sock\" || rm -f \"\$_sock\" 2>/dev/null
-         done; true"
-
-    _step "/var/tmp (user files only)" \
-        "find /var/tmp -maxdepth 1 \
-         -not -name 'tmp' \
-         -not -name 'systemd-private*' \
-         -delete 2>/dev/null; true"
-
-    _step "Home dirs (Downloads/Docs/Music/Videos/Pics)" \
-        "rm -rf ~/Downloads/* ~/Downloads/.* \
-                ~/Music/* ~/Music/.* \
-                ~/Videos/* ~/Videos/.* \
-                ~/Pictures/* ~/Pictures/.* \
-                ~/Documents/* ~/Documents/.* \
-                ~/Desktop/* ~/Desktop/.* \
-                ~/Templates/* ~/Public/* 2>/dev/null; true"
-
-    _step "Home scripts (*.sh/.py/.pl/.rb)" \
-        "find \$HOME -maxdepth 1 -type f \
-         \( -name '*.sh' -o -name '*.py' -o -name '*.pl' \
-            -o -name '*.rb' -o -name '*.bash' -o -name '*.zsh' \) \
-         -not -name '.*' -delete 2>/dev/null; true"
-
-    _step "Journal logs" \
-        "echo CHANGEME_PASSWORD | sudo -S journalctl --rotate -q 2>/dev/null
-         echo CHANGEME_PASSWORD | sudo -S journalctl --vacuum-time=1s -q 2>/dev/null
-         echo CHANGEME_PASSWORD | sudo -S find /var/log/journal -type f \
-           \( -name '*.journal' -o -name '*.journal~' \) -delete 2>/dev/null
-         echo CHANGEME_PASSWORD | sudo -S systemctl kill --kill-who=main \
-           -s USR2 systemd-journald 2>/dev/null
-         sleep 0.3; true"
-
-    _step "System logs" \
-        "echo CHANGEME_PASSWORD | sudo -S truncate -s 0 \
-         /var/log/auth.log /var/log/syslog /var/log/kern.log \
-         /var/log/wtmp /var/log/btmp /var/log/lastlog \
-         /var/log/dpkg.log /var/log/faillog 2>/dev/null"
-
-    _step "Flush swap" \
-        "echo CHANGEME_PASSWORD | sudo -S swapoff -a 2>/dev/null
-         echo CHANGEME_PASSWORD | sudo -S swapon -a 2>/dev/null"
-
-    _step "SSH keys & known_hosts" \
-        "rm -f ~/.ssh/id_* ~/.ssh/*.pem ~/.ssh/*.key \
-               ~/.ssh/known_hosts ~/.ssh/known_hosts.old \
-               ~/.ssh/authorized_keys ~/.ssh/config 2>/dev/null
-         mkdir -p ~/.ssh && touch ~/.ssh/known_hosts
-         chmod 700 ~/.ssh && chmod 600 ~/.ssh/known_hosts"
-
-    _step "VNC/TightVNC traces" \
-        "if [[ -d \$HOME/.vnc ]]; then
-           find \$HOME/.vnc -maxdepth 2 \
-             \( -name '*.log' -o -name '*.pid' -o -name 'xstartup' \
-                -o -name 'passwd' -o -name 'vncpasswd' \) \
-             -type f -delete 2>/dev/null
-         fi
-         find \$HOME -maxdepth 3 \
-           \( -name '*.vnc' -o -name 'vncpasswd' \) \
-           -type f -delete 2>/dev/null
-         find \$HOME /tmp -maxdepth 2 \
-           \( -name '.x11vncpass' -o -name 'x11vncpass' -o -name 'vp' \) \
-           -type f -delete 2>/dev/null
-         rm -rf \$HOME/.config/tigervnc 2>/dev/null
-         rm -f \$HOME/setup_vnc.py 2>/dev/null
-         rm -f \$HOME/.ssh/known_hosts.old \$HOME/.ssh/known_hosts.bak 2>/dev/null
-         true"
-
-    _step "Remmina/RDP sessions" \
-        "rm -rf ~/.local/share/remmina/ ~/.remmina/ 2>/dev/null; true"
-
-    _step "SSH cmds from history" \
-        "for hf in ~/.zsh_history ~/.bash_history; do
-           [[ -f \"\$hf\" ]] || continue
-           local _ght
-           _ght=\$(mktemp) 2>/dev/null
-           grep -v 'ssh\|scp\|sshpass\|expect\|@[0-9]' \"\$hf\" \
-             > \"\$_ght\" 2>/dev/null \
-             && mv \"\$_ght\" \"\$hf\" \
-             || { cat /dev/null > \"\$hf\"; rm -f \"\$_ght\"; }
-         done; true"
-
-    _step "Firefox ESR (history/cookies/sessions/cache)" \
-        "local ff_profile
-         ff_profile=\$(find ~/.mozilla/firefox -maxdepth 1 -type d \
-             \( -name '*.default-esr' -o -name '*.default' \) 2>/dev/null | head -1)
-         if [[ -n \"\$ff_profile\" ]]; then
-             for db in places.sqlite cookies.sqlite formhistory.sqlite \
-                       webappstore.sqlite content-prefs.sqlite \
-                       favicons.sqlite storage.sqlite; do
-                 rm -f \"\$ff_profile/\$db\" \"\$ff_profile/\$db-wal\" \
-                        \"\$ff_profile/\$db-shm\" 2>/dev/null
-             done
-             rm -f \"\$ff_profile/sessionstore.jsonlz4\" \
-                    \"\$ff_profile/sessionstore-backups\"/*.jsonlz4 \
-                    \"\$ff_profile/downloads.sqlite\" 2>/dev/null
-             rm -rf \"\$ff_profile/cache2/\" \"\$ff_profile/startupCache/\" 2>/dev/null
-             rm -rf ~/.cache/firefox/ ~/.cache/mozilla/ 2>/dev/null
-         fi; true"
-
-    _step "GNOME shell app state & session history" \
-        "rm -f ~/.local/share/gnome-shell/application_state \
-               ~/.local/share/gnome-shell/session-active-history.json \
-               ~/.local/share/gnome-shell/session.gvdb 2>/dev/null; true"
-
-    _step "TextEditor recent & session" \
-        "rm -f ~/.local/share/org.gnome.TextEditor/recently-used.xbel \
-               ~/.local/share/org.gnome.TextEditor/session.gvariant 2>/dev/null
-         rm -rf ~/.local/share/org.gnome.TextEditor/drafts/ 2>/dev/null; true"
-
-    _step "cherrytree recent dirs" \
-        "if [[ -f ~/.config/cherrytree/config.cfg ]]; then
-             sed -i 's|^pick_dir_file=.*|pick_dir_file=/home/someone|' \
-                 ~/.config/cherrytree/config.cfg 2>/dev/null
-             sed -i 's|^pick_dir_export=.*|pick_dir_export=/home/someone|' \
-                 ~/.config/cherrytree/config.cfg 2>/dev/null
-             sed -i 's|^pick_dir_import=.*|pick_dir_import=/home/someone|' \
-                 ~/.config/cherrytree/config.cfg 2>/dev/null
-             sed -i 's|^pick_dir_img=.*|pick_dir_img=/home/someone|' \
-                 ~/.config/cherrytree/config.cfg 2>/dev/null
-             sed -i 's|^recent_docs=true|recent_docs=false|' \
-                 ~/.config/cherrytree/config.cfg 2>/dev/null
-         fi; true"
-
-    _step "Trash (empty)" \
-        "rm -rf ~/.local/share/Trash/files/* \
-               ~/.local/share/Trash/info/* \
-               ~/.local/share/Trash/expunged/* 2>/dev/null; true"
-
-    _step "Service logs (postgres/apache/nginx/macchanger)" \
-        "echo CHANGEME_PASSWORD | sudo -S find /var/log/postgresql -maxdepth 1 -name '*.log' -type f -exec truncate -s 0 {} \\; 2>/dev/null
-         echo CHANGEME_PASSWORD | sudo -S truncate -s 0 \
-             /var/log/apache2/access.log \
-             /var/log/apache2/error.log \
-             /var/log/apache2/other_vhosts_access.log \
-             /var/log/nginx/access.log \
-             /var/log/nginx/error.log \
-             /var/log/macchanger.log 2>/dev/null; true"
-
-    _step "dconf recent-folder reset" \
-        "dconf reset /org/gnome/portal/filechooser/org.gnome.Settings/last-folder-path 2>/dev/null
-         dconf reset /org/gtk/settings/file-chooser/recent-files-max-age 2>/dev/null; true"
-
-    _step "locate database (mlocate/plocate)" \
-        "echo CHANGEME_PASSWORD | sudo -S truncate -s 0 /var/lib/mlocate/mlocate.db 2>/dev/null
-         echo CHANGEME_PASSWORD | sudo -S truncate -s 0 /var/lib/plocate/plocate.db 2>/dev/null
-         echo CHANGEME_PASSWORD | sudo -S updatedb 2>/dev/null; true"
-
-    _step "Crash dumps (apport)" \
-        "echo CHANGEME_PASSWORD | sudo -S rm -rf /var/crash/* 2>/dev/null
-         rm -rf ~/.cache/apport/* 2>/dev/null; true"
-
-    _step "Chrome/Chromium/Brave (history/cookies/logins)" \
-        "for base in ~/.config/google-chrome ~/.config/chromium ~/.config/BraveSoftware/Brave-Browser; do
-           [[ -d \"\$base\" ]] || continue
-           for prof in \"\$base\"/Default \"\$base\"/Profile*; do
-             [[ -d \"\$prof\" ]] || continue
-             rm -f \"\$prof\"/History \"\$prof\"/History-journal \"\$prof\"/Cookies \"\$prof\"/Cookies-journal \
-                    \"\$prof/Web Data\" \"\$prof/Web Data-journal\" \"\$prof/Login Data\" \"\$prof/Login Data-journal\" 2>/dev/null
-             rm -rf \"\$prof/Sessions\" \"\$prof/Session Storage\" \"\$prof/Local Storage\" \"\$prof/IndexedDB\" 2>/dev/null
-           done
-           rm -rf \"\$base/Crash Reports\" 2>/dev/null
-         done; true"
-
-    _step "apt/dpkg extra logs" \
-        "echo CHANGEME_PASSWORD | sudo -S truncate -s 0 /var/log/apt/history.log /var/log/apt/term.log 2>/dev/null; true"
-
-    _step "User systemd journal" \
-        "rm -rf ~/.local/state/journal/* 2>/dev/null; true"
-
-    _step "DNS & ARP cache" \
-        "echo CHANGEME_PASSWORD | sudo -S resolvectl flush-caches 2>/dev/null
-         echo CHANGEME_PASSWORD | sudo -S systemd-resolve --flush-caches 2>/dev/null
-         echo CHANGEME_PASSWORD | sudo -S ip neigh flush all 2>/dev/null; true"
-
-    _step "Metasploit (~/.msf4)" \
-        "rm -rf ~/.msf4/history ~/.msf4/logs ~/.msf4/loot \
-                ~/.msf4/local ~/.msf4/store.db 2>/dev/null; true"
-
-    _step "Cracking potfiles (john/hashcat)" \
-        "rm -f ~/.john/john.pot ~/.john/john.log 2>/dev/null
-         find ~/.local/share/hashcat ~/.hashcat -maxdepth 1 \
-             -name '*.potfile' -type f -delete 2>/dev/null
-         rm -rf ~/.local/share/hashcat/sessions ~/.hashcat/sessions 2>/dev/null; true"
-
-    _step "CrackMapExec/NetExec loot" \
-        "rm -rf ~/.cme ~/.nxc 2>/dev/null; true"
-
-    _step "Responder logs" \
-        "echo CHANGEME_PASSWORD | sudo -S rm -rf /usr/share/responder/logs/* 2>/dev/null; true"
-
-    _step "evil-winrm history" \
-        "rm -rf ~/.evil-winrm 2>/dev/null; true"
-
-    _step "SQLMap output" \
-        "rm -rf ~/.local/share/sqlmap ~/.sqlmap 2>/dev/null; true"
-
-    _step "Wireshark recent/profiles" \
-        "rm -f ~/.config/wireshark/recent ~/.config/wireshark/recent_common 2>/dev/null; true"
-
-    _step "Burp Suite data" \
-        "rm -rf ~/.BurpSuite ~/.java/.userPrefs/burp 2>/dev/null; true"
-
-    _step "Claude Code (transcripts/session)" \
-        "rm -rf ~/.claude/projects ~/.claude/todos \
-                ~/.claude/shell-snapshots ~/.claude/statsig 2>/dev/null
-         rm -f ~/.claude.json ~/.claude.json.backup 2>/dev/null; true"
-
-    _step "Custom paths" \
-        "if [[ -s \"\$GHOSTMODE_CUSTOM_PATHS_FILE\" ]]; then
-             while IFS= read -r p; do
-                 [[ -z \"\$p\" ]] && continue
-                 if [[ -d \"\$p\" ]]; then
-                     find \"\$p\" -mindepth 1 -delete 2>/dev/null
-                 elif [[ -f \"\$p\" ]]; then
-                     : > \"\$p\" 2>/dev/null
-                 fi
-             done < \"\$GHOSTMODE_CUSTOM_PATHS_FILE\"
-         fi; true"
-
-    _step "zsh autosuggestions (disable command history suggestions)" \
-        "for f in /usr/share/zsh-autosuggestions/zsh-autosuggestions.zsh \
-                  /usr/share/zsh-autosuggestions/zsh-autosuggestions.plugin.zsh; do
-             [[ -f \"\$f\" ]] && echo CHANGEME_PASSWORD | sudo -S mv \"\$f\" \"\${f}.ghostmode-disabled\" 2>/dev/null
-         done; true"
-
-    _step "Claude Desktop app data" \
-        "rm -rf ~/.config/Claude/Cache ~/.config/Claude/CachedData \
-                ~/.config/Claude/GPUCache ~/.config/Claude/Crashpad \
-                ~/.config/Claude/Backups ~/.config/Claude/logs 2>/dev/null
-         rm -rf ~/.config/Claude/User/History/* 2>/dev/null
-         rm -f ~/.config/Claude/Cookies ~/.config/Claude/Cookies-journal 2>/dev/null; true"
+    _GM_STEP_FAILS=0
+    _step "Clipboard" _c_clipboard
+    _step "Shell history" _history_bump_and_wipe
+    _step "App histories" _c_app_histories
+    _step "Recently used" _c_recent
+    _step "Thumbnails and cache" _c_cache
+    _step "SQLite sidecars" _c_wal
+    _step "Cursor" _cursor_clean
+    _step "Zeitgeist and Tracker" _c_zeitgeist
+    _step "Temp files" _c_tmp
+    _step "var/tmp" _c_vartmp
+    _step "Home folders" _c_home_dirs
+    _step "Home scripts" _c_home_scripts
+    _step "Journal" _c_journal
+    _step "System logs" _c_syslogs
+    _step "Device traces" _extra_traces
+    _step "Swap" _c_swap
+    _step "SSH keys" _c_ssh
+    _step "VNC traces" _c_vnc
+    _step "Remmina" _c_remmina
+    _step "Firefox" _c_firefox
+    _step "GNOME shell" _c_gnome
+    _step "Text editor" _c_texteditor
+    _step "CherryTree" _c_cherrytree
+    _step "Trash" _c_trash
+    _step "Service logs" _c_service_logs
+    _step "Recent folders" _c_dconf
+    _step "Locate database" _c_locate
+    _step "Crash dumps" _c_crash
+    _step "Chromium family" _c_chromium
+    _step "Apt logs" _c_apt
+    _step "User journal" _c_user_journal
+    _step "DNS and ARP" _c_dns
+    _step "Pentest tools" _c_pentest
+    _step "Claude" _c_claude
+    _step "Custom paths" _c_custom
+    if _shield_tor_running; then
+        _shield_audit || _GM_STEP_FAILS=$((_GM_STEP_FAILS + 1))
+    fi
 }
 
-_step() {
-    local label="$1" cmd="$2"
-    eval "$cmd"
-    local padded
-    padded=$(printf "%-45s" "$label")
-    echo -e "  ${GRN}✔${RST}  ${padded} ${GRN}cleared${RST}"
-    # Small pause between each step — prevents any run (especially the missed-run
-    # catch-up after boot) from hitting the CPU/disk as one heavy burst
-    sleep 0.4
+_clean_finish_message() {
+    if [[ "${_GM_STEP_FAILS:-0}" -gt 0 ]]; then
+        echo -e "  ${RED}${BLD}${_GM_STEP_FAILS} step(s) still show a trace or were refused.${RST}"
+        echo -e "  ${GRY}Red means that layer is still there. This is not a complete wipe.${RST}"
+    else
+        echo -e "  ${GRN}${BLD}Finished the layers this tool can reach.${RST}"
+        echo -e "  ${GRY}Not a 100% wipe. The router, ISP, cloud accounts, firmware, and SSD spare area are outside this tool.${RST}"
+    fi
 }
 
 cmd_clean() {
     local auto="${1:-}"
     if [[ "$auto" == "auto" ]]; then
-        # No progress output here on purpose — StandardOutput for this unit
-        # is set to null, so printing anything would just accumulate in
-        # systemd's own journal, which is exactly the kind of log of the
-        # project's own operations this tool is meant to avoid leaving.
-        _run_clean >/dev/null 2>&1
+        GHOSTMODE_MODE=auto
+    else
+        GHOSTMODE_MODE=full
+    fi
+    if [[ "$auto" == "auto" && ! -t 1 ]]; then
+        _run_clean >/dev/null
     else
         echo ""
         echo -e "${BLD}${BLU}╔══════════════════════════════════════════════════╗${RST}"
@@ -587,12 +765,13 @@ cmd_clean() {
         echo ""
         _run_clean
         echo ""
-        echo -e "  ${GRN}${BLD}[+] All tracks cleared.${RST}"
+        _clean_finish_message
         echo ""
     fi
 }
 
 cmd_delete() {
+    GHOSTMODE_MODE=delete
     echo ""
     echo -e "${BLD}${RED}╔══════════════════════════════════════════════════╗${RST}"
     echo -e "${BLD}${RED}║                 DELETE NOW                      ║${RST}"
@@ -600,7 +779,6 @@ cmd_delete() {
     echo ""
     _run_clean
     echo ""
-    echo -e "  ${RED}${BLD}[✘] Delete complete. Everything wiped.${RST}"
+    _clean_finish_message
     echo ""
 }
-

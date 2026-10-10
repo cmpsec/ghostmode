@@ -151,6 +151,41 @@ It cannot fix a hardware leak, and it cannot fix a habit. The real
 you're relying on, and know that it only takes one weak layer to
 undo all the others.${RST}
 
+${BLD}${CYN}[ 6. What never leaves the machine's hands ]${RST}
+
+A cleanup on this laptop does not erase:
+
+- The router's DHCP leases, MAC addresses, and device names.
+- The Wi-Fi access point's association log.
+- What the ISP stored: your address there, when you connected, and how much data moved. If Tor drops for a moment, the ISP sees the destination too.
+- A mobile operator, if this machine has a SIM. Ghost Mode does not control the modem and cannot delete the carrier's records.
+- Cloud copies: browser sync, Drive, GitHub, Telegram on the server. Deleting the local file does not delete the server. Turn sync off, or the wipe is local only.
+- Other devices on the network. This install covers this machine only.
+- The hardware itself: SSD spare area, firmware, Intel ME or AMD PSP, the TPM, and UEFI variables. This tool does not run nvme sanitize or hdparm security-erase. Those erase the whole disk, including the system.
+
+${BLD}${CYN}[ 7. Network shield, DNS, and WebRTC ]${RST}
+
+${GRN}ghostmode tor on${RST} starts the shield after the tunnel is up.
+${GRN}ghostmode tor off${RST} and ${GRN}ghostmode destroy${RST} put back the IPv6, NTP, DHCP hostname, and captive-portal settings that were saved. If the kill switch is still armed, IPv4 stays closed.
+
+While Tor is on, ${GRN}ghostmode status${RST} turns red if a global IPv6 address is up, if resolv.conf points at a public resolver, or if a connection is established by a process that is not Tor. There is no single line that says the network is protected.
+
+WebRTC and DNS-over-HTTPS inside a normal browser can bypass the system resolver. No clean iptables rule stops them without breaking the browser. Use Tor Browser for browsing, and turn WebRTC and DNS-over-HTTPS off in a normal browser. This tool does not write those settings into a Firefox profile.
+
+The shield blocks mDNS, SSDP, and NetBIOS, so local printers and device discovery stop while it is on. It also stops systemd-timesyncd, so the clock can drift. It does not set a fake time.
+
+${BLD}${CYN}[ 8. History, Cursor, and the disk ]${RST}
+
+The sudo password is entered once at install and kept in ~/.config/ghostmode/sudo.pass (mode 600) so the timer and later commands do not ask again. ghostmode destroy deletes that file. It is not stored in the git repository.
+
+Every cleanup, including the timer, empties shell history and keeps command suggestions off. Suggestions come back only from ${GRN}ghostmode destroy${RST}, and only after the history files are emptied. Scrollback in a terminal you still have open lives in that window until you close it. The timer does not close terminals.
+
+Cursor conversation text lives in SQLite (state.vscdb and the files next to it), not only in agent-transcripts. Deleting state.vscdb logs you out of Cursor, because the session token is in that database. The timer skips those databases while Cursor or cursor-agent is running and says so. It does not pretend they were cleared.
+
+On an SSD, and on btrfs, shred does not guarantee a physical erase. rm is what this tool uses. It removes the file from the operating system and from the programs that read it. It does not promise a forensic or 100% wipe.
+
+Closing a program is what drops that program's RAM. The timer does not kill the browser, the terminal, or Cursor. If the disk is not encrypted, physical access bypasses the rest. If the screen does not lock, the same is true for anyone at the keyboard.
+
 EOF
 }
 

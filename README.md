@@ -9,7 +9,7 @@
   <img alt="Status" src="https://img.shields.io/badge/status-open%20research%20project-blueviolet.svg">
 </p>
 
-# GhostMode V2.0
+# GhostMode V3.0
 
 **A command-line privacy and anonymity toolkit for Linux.**
 
@@ -67,28 +67,45 @@ chmod +x install.sh
 The installer is interactive and runs in 9 steps:
 
 1. Checks and installs missing dependencies (`curl`, `iproute2`, `iptables`, `pciutils`)
-2. Installs GhostMode (copies `bin/` and `lib/` to `~/.local/`, substituting your username and sudo password into the installed copy only — **your source checkout is never modified**)
-3. Installs the auto-cleanup `systemd` timer (power-saving settings: low priority, CPU-capped, runs hourly)
+2. Installs GhostMode (copies `bin/` and `lib/` to `~/.local/`) and saves the sudo password **once** so nothing asks for it again. See [Sudo password](#sudo-password-typed-once) below.
+3. Installs the auto-cleanup `systemd` timer (low priority, CPU-capped). The default interval is 1 hour. You can set minutes, hours, or days, and change it later with `ghostmode timer`.
 4. Enables and starts the timer
 5. Enables `systemd` lingering (so scheduled tasks run even without an active login session)
-6. Disables zsh's "show previous commands as you type" autosuggestion feature (a minor but real info-leak on a shared or observed screen)
+6. Turns off zsh command suggestions and installs a history guard. Every cleanup, including the timer, empties shell history from the root: the file, the in-memory list of new shells, and a hook that refuses to save new lines. Suggestions come back only from `ghostmode destroy`, and only after that wipe. An open terminal's scrollback stays in the window until you close it.
 7. Optionally enables Tor for all device connections right away
 8. Optionally adds `ghostmode`/`gs` shell aliases
 9. Runs a smoke test, then offers to delete the source checkout — **the installed copy is fully independent of it** (verified: `bin/ghostmode` has zero references back to the install directory)
 
-Re-running `install.sh` on an existing install **updates it in place** — your saved state (Tor on/off, custom paths, kill switch config) is preserved, and if Tor was already on, it gets re-armed with whatever fixes shipped since.
+Re-running `install.sh` on an existing install **updates it in place** — your saved state (Tor on/off, custom paths, kill switch config, and the saved sudo password) is preserved unless you type a new password at the prompt, which replaces the stored one. If Tor was already on, it gets re-armed with whatever fixes shipped since.
 
-No config file to hand-edit, no hardcoded paths to find and change. Everything above happens through the interactive prompts.
+### Sudo password (typed once)
+
+`install.sh` asks for your sudo password one time. It stores that password in:
+
+```text
+~/.config/ghostmode/sudo.pass
+```
+
+The file mode is `600` (only your user can read it). Every later privileged step — the timer, `ghostmode` / `delete` / `auto`, Tor, the kill switch, fingerprint rotation — reads this file and passes it to `sudo -S`. You are not prompted again. The password is not placed on the command line.
+
+That file lives only on this machine. It is **not** written into the git repository, the README, or the copied `lib/` scripts. `ghostmode destroy` deletes `~/.config/ghostmode`, including this file.
+
+There is also a sudoers drop-in for `/usr/local/libexec/ghostmode-priv`. That is a fallback if the password file is missing. With the file present, the stored password is what the tool uses, so the hourly run does not stop and wait for a keyboard.
 
 ---
 
 ## Command Reference
 
 ```
-ghostmode                          Full manual cleanup of all traces
+ghostmode                          Full cleanup of the layers this tool can reach
+ghostmode --force                  Same cleanup, after closing this user's Cursor and cursor-agent
 ghostmode status                   Full status report (nothing is deleted)
-ghostmode delete                   Same full cleanup, used as an explicit "wipe everything now"
-ghostmode auto                     Called automatically by the systemd timer every hour
+ghostmode verify                   Re-check Cursor databases and shell history
+ghostmode delete                   Same full cleanup. Also removes saved networks except the active one
+ghostmode delete --force           Delete, after closing this user's Cursor
+ghostmode auto                     Timer run. Includes shell history. Skips Cursor databases if Cursor is open
+ghostmode timer [30min|2h|1d]      How often the timer runs
+ghostmode shield on|off|status     Fail-closed IPv6, DNS, and LAN-announce checks used with Tor
 
 ghostmode connections              Incoming/outgoing connections + public IP/country
 ghostmode connections kill <pid>   Kill a suspicious connection's process
@@ -109,6 +126,8 @@ ghostmode location random            Random fake location
 ghostmode location off               Restore the real location
 
 ghostmode fingerprint rotate       Rotate MAC address + hostname once, right now
+ghostmode fingerprint rotate --machine-id
+                                   Also regenerate /etc/machine-id. This drops sessions and needs a reboot. The default does not touch it.
 ghostmode fingerprint auto on      Rotate both automatically on every boot
 ghostmode fingerprint auto off     Stop automatic rotation
 
@@ -133,7 +152,11 @@ A few commands deserve more explanation:
 
 **`ghostmode destroy`** requires typing `DESTROY` in full, not `y/n` — this is deliberately harder to trigger by accident than anything else in the tool.
 
-GhostMode keeps **no logs of its own operations**, by design. There is no audit trail of what was cleaned or when, anywhere — including in `systemd`'s own journal (output from the hourly timer is discarded, not journaled). The tradeoff is explicit: a privacy tool that logs its own cleanup activity has created a new trace of exactly what it was hiding.
+GhostMode keeps **no logs of its own operations**, by design. The timer discards successful output (`StandardOutput=null`). A failed step can still show up on stderr. A privacy tool that logs its own cleanup would be a new trace of what it cleared.
+
+`ghostmode` and `ghostmode delete` clear Cursor conversation databases (`state.vscdb`, its `-wal`/`-shm` sidecars, workspace copies, `~/.cursor/chats`, and agent stores). That database also holds the Cursor session token, so the wipe logs you out. If Cursor or `cursor-agent` is running, the step is red and tells you to close it, unless you pass `--force`, which closes only this user's Cursor processes. The timer never passes `--force`: it skips those databases and prints a yellow line, while still clearing shell history.
+
+On an SSD, and on btrfs, `shred` does not guarantee a physical erase. This tool uses `rm` and truncate. That removes the name from the filesystem and from the programs that would read it. It is not a forensic wipe, and it is not 100%.
 
 ---
 
@@ -206,7 +229,13 @@ ghostmode/
 │   ├── 10-metadata.sh      ghostmode metadata
 │   ├── 11-paths.sh         ghostmode paths
 │   ├── 12-destroy.sh       ghostmode destroy
-│   └── 13-security.sh      ghostmode security
+│   ├── 13-security.sh      ghostmode security
+│   ├── 14-history.sh       Shell-history guard and root wipe
+│   ├── 15-cursor.sh        Cursor conversation stores
+│   ├── 16-shield.sh        Tor shield (IPv6, DNS, LAN announce)
+│   ├── 17-extra.sh         Login logs, git credentials, editors, messengers
+│   ├── 18-verify.sh        ghostmode verify
+│   └── 21-timer.sh         ghostmode timer
 ├── systemd/
 │   ├── ghostmode-timer.service   Hourly auto-clean, templated by install.sh
 │   └── ghostmode-timer.timer
@@ -223,7 +252,10 @@ ghostmode/
 
 A tool that doesn't say what it can't do isn't trustworthy. So:
 
-- **The embedded-credential model is a real tradeoff.** `install.sh` bakes your sudo password into the installed copy of GhostMode so it can run privileged commands non-interactively (for the hourly timer, the kill switch watchdog, etc.). That installed copy is as sensitive as a plaintext password file and should be treated like one — protected by full-disk encryption and ordinary file permissions.
+- **There is no 100% wipe and no 100% anonymity.** After a successful run, these are still there: the router's DHCP and MAC log, the Wi-Fi access point's association log, the ISP's record of your address and connection times, any cloud copy (GitHub, browser sync, Telegram on the server), firmware, and SSD spare area. `ghostmode security` names each of these. A green status line means that one layer checked out, not that the machine is clean.
+- **The sudo password is stored on the machine, on purpose, so the timer never asks.** It sits in `~/.config/ghostmode/sudo.pass` with mode `600`. Treat that file like a password. Full-disk encryption matters, because anyone who can read it can sudo. It is not in the git repo. `ghostmode destroy` deletes it. The sudoers helper is only a fallback when that file is gone.
+- **`ghostmode` deletes local git credential files** (`~/.git-credentials`, `~/.config/gh/hosts.yml`, and the credential helper) so a token used to push is not left on disk. It does not delete project `.git` directories, and it does not delete the copy on GitHub.
+- **Cursor `state.vscdb` is the conversation body.** Clearing it logs you out. Empty files the next time Cursor starts are expected.
 - **Voiceprint/mains-hum scrubbing (`metadata audio`/`video`) significantly reduces matchability. It does not mathematically guarantee it can never be matched by any technique, present or future.** Treat it as a strong layer, not a certainty.
 - **`fingerprint rotate` changes your MAC address and hostname — local-network-level identifiers.** It does not touch browser-level fingerprinting (canvas, WebGL, fonts); that's Tor Browser's job, and it already does it.
 - **Visual content in photos/videos (faces, recognizable locations) is not something `metadata` can fix.** Metadata scrubbing and content analysis are different problems.

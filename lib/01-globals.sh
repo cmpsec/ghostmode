@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # shellcheck shell=bash
+# shellcheck disable=SC2034
 # Part of Ghost Mode — sourced by bin/ghostmode, not run directly.
 
 
@@ -10,7 +11,39 @@
 # `cat << EOF` heredoc, which never interprets escapes and would print the
 # literal text "\033[1m" instead of a color. A real byte here works
 # everywhere (echo, echo -e, printf, cat heredocs) with no exceptions.
-GHOSTMODE_VERSION="2.0"
+GHOSTMODE_VERSION="3.0"
+
+# full | auto | delete. auto skips live app databases and never passes --force.
+GHOSTMODE_MODE="full"
+GHOSTMODE_FORCE=0
+_GM_STEP_MSG=""
+_GM_STEP_FAILS=0
+
+# install.sh saves the sudo password here once (mode 600). Later runs,
+# including the timer, read it and do not prompt. It is not in the git repo.
+# destroy deletes it. The priv helper is only a fallback if that file is gone.
+GHOSTMODE_PRIV="/usr/local/libexec/ghostmode-priv"
+GHOSTMODE_SUDO_FILE="$HOME/.config/ghostmode/sudo.pass"
+GHOSTMODE_HISTORY_GUARD="$HOME/.config/ghostmode/history-guard.zsh"
+GHOSTMODE_HISTORY_GENERATION="$HOME/.config/ghostmode/history.generation"
+GHOSTMODE_HISTORY_SAVED="$HOME/.config/ghostmode/history.saved"
+GHOSTMODE_SHIELD_STATE="$HOME/.config/ghostmode/shield.state"
+GHOSTMODE_TIMER_INTERVAL_FILE="$HOME/.config/ghostmode/timer.interval"
+GHOSTMODE_GUARD_MARK="ghostmode-history-guard"
+
+_gm_sudo() {
+    # Prefer the saved password so nothing asks again. sudo -S reads it
+    # from the file, so the password is not placed on the command line.
+    if [[ -f "$GHOSTMODE_SUDO_FILE" ]]; then
+        sudo -S -p '' "$@" < "$GHOSTMODE_SUDO_FILE"
+        return
+    fi
+    if [[ -x "$GHOSTMODE_PRIV" ]]; then
+        sudo -n "$GHOSTMODE_PRIV" "$@"
+        return
+    fi
+    sudo -n "$@"
+}
 
 RED=$'\033[0;31m'
 GRN=$'\033[0;32m'

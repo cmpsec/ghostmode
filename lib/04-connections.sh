@@ -61,6 +61,18 @@ _conn_local_info() {
     fi
 }
 
+_conn_split_proc() {
+    local proc="$1"
+    CONN_PNAME=""
+    CONN_PID=""
+    if _conn_line_sensitive "$proc"; then
+        CONN_PNAME="[redacted]"
+        return 0
+    fi
+    CONN_PNAME=$(echo "$proc" | grep -oP '\(\("\K[^"]+' | head -1)
+    CONN_PID=$(echo "$proc" | grep -oP 'pid=\K[0-9]+' | head -1)
+}
+
 # Prints one connection row in a unified format, returns 0 if flagged suspicious (to add to the review list)
 _conn_print_row() {
     local local_addr="$1" peer_addr="$2" state="$3" pname="$4" pid="$5" tag="$6"
@@ -69,6 +81,9 @@ _conn_print_row() {
     ppad=$(printf "%-22s" "$peer_addr")
     spad=$(printf "%-9s" "$state")
     local proc_disp="${pname:-?}${pid:+(${pid})}"
+    if _conn_line_sensitive "${pname:-} ${pid:-}"; then
+        proc_disp="[redacted]"
+    fi
     if [[ "$tag" == "red" ]]; then
         echo -e "  ${RED}✘${RST}  ${lpad} → ${ppad} ${spad} ${RED}${proc_disp:-?}${RST}"
         return 0
@@ -102,7 +117,7 @@ cmd_connections() {
     _conn_local_info
 
     local ss_out
-    ss_out=$(echo CHANGEME_PASSWORD | sudo -S ss -4 -tunap 2>/dev/null | tail -n +2)
+    ss_out=$(_gm_sudo ss -4 -tunap 2>/dev/null | tail -n +2 || true)
 
     # Collect local LISTEN ports first to classify connections later as Incoming/Outgoing
     local -a listen_ports=()
@@ -114,9 +129,8 @@ cmd_connections() {
         found_listen=1
         local lport="${local##*:}"
         listen_ports+=("$lport")
-        local pname pid
-        pname=$(echo "$proc" | grep -oP '\(\("\K[^"]+' | head -1)
-        pid=$(echo "$proc"   | grep -oP 'pid=\K[0-9]+' | head -1)
+        _conn_split_proc "$proc"
+        local pname="$CONN_PNAME" pid="$CONN_PID"
         local tag="green"
         if ! _is_in_array "$lport" "${GHOSTMODE_WHITELIST_LISTEN_PORTS[@]}"; then
             tag="yellow"
@@ -134,9 +148,8 @@ cmd_connections() {
         local lport="${local##*:}"
         _is_in_array "$lport" "${listen_ports[@]}" || continue
         found_in=1
-        local pname pid
-        pname=$(echo "$proc" | grep -oP '\(\("\K[^"]+' | head -1)
-        pid=$(echo "$proc"   | grep -oP 'pid=\K[0-9]+' | head -1)
+        _conn_split_proc "$proc"
+        local pname="$CONN_PNAME" pid="$CONN_PID"
         local rport="${peer##*:}" ripaddr="${peer%:*}"
         local tag="green"
         if _is_in_array "$rport" "${GHOSTMODE_BAD_PORTS[@]}" || [[ -z "$pname" ]]; then
@@ -155,9 +168,8 @@ cmd_connections() {
         local lport="${local##*:}"
         _is_in_array "$lport" "${listen_ports[@]}" && continue
         found_out=1
-        local pname pid
-        pname=$(echo "$proc" | grep -oP '\(\("\K[^"]+' | head -1)
-        pid=$(echo "$proc"   | grep -oP 'pid=\K[0-9]+' | head -1)
+        _conn_split_proc "$proc"
+        local pname="$CONN_PNAME" pid="$CONN_PID"
         local rport="${peer##*:}" ripaddr="${peer%:*}"
         local tag="green"
         if _is_in_array "$rport" "${GHOSTMODE_BAD_PORTS[@]}" || [[ -z "$pname" ]]; then
@@ -182,6 +194,21 @@ cmd_connections() {
             echo -e "       ╰ To block the IP:      ${BLD}ghostmode connections block $ripaddr${RST}"
         done
     fi
+    if _shield_tor_running; then
+        echo ""
+        echo -e "${BLD}${CYN}[ Outside Tor ]${RST}"
+        local foreign
+        foreign=$(_shield_foreign_established)
+        if [[ -z "$foreign" ]]; then
+            echo -e "  ${GRN}✔${RST}  No established connection outside Tor"
+        else
+            while IFS= read -r line; do
+                [[ -z "$line" ]] && continue
+                echo -e "  ${RED}✘${RST}  ${line}"
+            done <<< "$foreign"
+        fi
+    fi
+    unset ss_out
     echo ""
     echo -e "${BLD}${BLU}══════════════════════════════════════════════════${RST}"
     echo ""
@@ -193,8 +220,8 @@ _conn_block() {
         echo "Usage: ghostmode connections block <ip>"
         return 1
     fi
-    echo CHANGEME_PASSWORD | sudo -S iptables -A INPUT  -s "$ip" -j DROP 2>/dev/null
-    echo CHANGEME_PASSWORD | sudo -S iptables -A OUTPUT -d "$ip" -j DROP 2>/dev/null
+    _gm_sudo iptables -A INPUT  -s "$ip" -j DROP 2>/dev/null
+    _gm_sudo iptables -A OUTPUT -d "$ip" -j DROP 2>/dev/null
     echo -e "  ${GRN}✔${RST}  Blocked ${ip} (INPUT + OUTPUT)"
 }
 
@@ -204,7 +231,7 @@ _conn_kill() {
         echo "Usage: ghostmode connections kill <pid>"
         return 1
     fi
-    if echo CHANGEME_PASSWORD | sudo -S kill -9 "$pid" 2>/dev/null; then
+    if _gm_sudo kill -9 "$pid" 2>/dev/null; then
         echo -e "  ${GRN}✔${RST}  Process ${pid} killed"
     else
         echo -e "  ${RED}✘${RST}  Could not kill process ${pid} (check the PID)"
